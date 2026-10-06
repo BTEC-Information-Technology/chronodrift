@@ -1,0 +1,23 @@
+{
+  "name": "chronodrift",
+  "private": true,
+  "version": "0.1.0",
+  "license": "MIT",
+  "description": "Chrono Drift: a 3D endless runner across time eras (Three.js + TypeScript).",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "three": "^0.169.0"
+  },
+  "devDependencies": {
+    "@types/three": "^0.169.0",
+    "typescript": "^5.6.2",
+    "vite": "^5.4.8",
+    "vitest": "^2.1.2"
+  }
+}

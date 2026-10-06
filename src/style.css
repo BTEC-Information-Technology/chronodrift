@@ -1,0 +1,358 @@
+* {
+  box-sizing: border-box;
+}
+html,
+body {
+  margin: 0;
+  height: 100%;
+  overflow: hidden;
+  background: #05010f;
+  color: #e6f0ff;
+  font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  user-select: none;
+  touch-action: none;
+}
+#game {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+#hud {
+  position: fixed;
+  top: max(12px, env(safe-area-inset-top));
+  left: 0;
+  right: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  pointer-events: none;
+  text-shadow: 0 0 12px rgba(0, 234, 255, 0.6);
+}
+#score {
+  font-size: 14vw;
+  font-weight: 800;
+  line-height: 1;
+  color: #7ef9ff;
+}
+#best {
+  margin-top: 4px;
+  font-size: 3.6vw;
+  color: #c0a3ff;
+}
+#session {
+  margin-top: 2px;
+  font-size: 3.2vw;
+  color: #7fe3ff;
+  opacity: 0.85;
+}
+
+#coins {
+  position: fixed;
+  top: max(12px, env(safe-area-inset-top));
+  right: 14px;
+  font-size: 5vw;
+  font-weight: 800;
+  color: #7ef9ff;
+  text-shadow: 0 0 14px rgba(126, 249, 255, 0.7);
+  pointer-events: none;
+}
+#pickup {
+  position: fixed;
+  top: 26%;
+  left: 0;
+  right: 0;
+  text-align: center;
+  pointer-events: none;
+  font-size: 6vw;
+  font-weight: 900;
+  color: #7ef9ff;
+  text-shadow: 0 0 18px rgba(126, 249, 255, 0.9);
+  opacity: 0;
+  z-index: 6;
+}
+#pickup.show {
+  animation: pickup 0.65s ease-out;
+}
+@keyframes pickup {
+  0% {
+    opacity: 0;
+    transform: translateY(10px) scale(0.8);
+  }
+  25% {
+    opacity: 1;
+    transform: translateY(0) scale(1.1);
+  }
+  100% {
+    opacity: 0;
+    transform: translateY(-26px) scale(1);
+  }
+}
+@media (min-width: 640px) {
+  #coins {
+    font-size: 24px;
+  }
+  #pickup {
+    font-size: 30px;
+  }
+}
+
+#era {
+  position: fixed;
+  top: 38%;
+  left: 0;
+  right: 0;
+  text-align: center;
+  pointer-events: none;
+  font-size: 8vw;
+  font-weight: 900;
+  letter-spacing: 2px;
+  color: #ffffff;
+  text-shadow: 0 0 30px rgba(207, 234, 255, 0.9);
+  opacity: 0;
+  transition: opacity 0.5s ease;
+  z-index: 5;
+}
+#era.show {
+  opacity: 1;
+  transition: opacity 0.15s ease;
+}
+@media (min-width: 640px) {
+  #era {
+    font-size: 44px;
+  }
+}
+
+#overlay {
+  position: fixed;
+  inset: 0;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  background: radial-gradient(circle at 50% 40%, rgba(20, 0, 40, 0.55), rgba(5, 1, 15, 0.92));
+  backdrop-filter: blur(2px);
+  z-index: 10;
+}
+#overlay.show {
+  display: flex;
+}
+.panel {
+  text-align: center;
+  padding: 28px;
+}
+.panel h1 {
+  margin: 0 0 8px;
+  font-size: 11vw;
+  font-weight: 900;
+  letter-spacing: 2px;
+  color: #ff36c8;
+  text-shadow: 0 0 24px rgba(255, 54, 200, 0.7);
+}
+.panel h1 span {
+  color: #00eaff;
+  text-shadow: 0 0 24px rgba(0, 234, 255, 0.7);
+}
+.panel #msg {
+  margin: 0 0 22px;
+  font-size: 4.2vw;
+  color: #cfe0ff;
+  white-space: pre-line;
+}
+.panel .hint {
+  margin-top: 14px;
+  font-size: 3.2vw;
+  color: #7c84a8;
+}
+#startBtn {
+  appearance: none;
+  border: none;
+  cursor: pointer;
+  padding: 16px 48px;
+  border-radius: 14px;
+  font-size: 6vw;
+  font-weight: 800;
+  letter-spacing: 1px;
+  color: #05010f;
+  background: linear-gradient(180deg, #00eaff, #00a3ff);
+  box-shadow: 0 0 28px rgba(0, 234, 255, 0.6);
+}
+#startBtn:active {
+  transform: scale(0.97);
+}
+.ghost {
+  appearance: none;
+  margin-top: 14px;
+  padding: 10px 26px;
+  border: 1px solid rgba(0, 234, 255, 0.5);
+  border-radius: 12px;
+  background: rgba(0, 234, 255, 0.08);
+  color: #9fe9ff;
+  font-size: 4.4vw;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+/* --- Settings panel (bottom sheet, leaves the scene visible above) --- */
+#settings {
+  position: fixed;
+  inset: 0;
+  display: none;
+  align-items: flex-end;
+  justify-content: center;
+  pointer-events: none;
+  z-index: 20;
+}
+#settings.show {
+  display: flex;
+}
+#settings .sheet {
+  pointer-events: auto;
+  width: 100%;
+  max-width: 540px;
+  max-height: 72vh;
+  overflow-y: auto;
+  padding: 16px 20px calc(20px + env(safe-area-inset-bottom));
+  background: rgba(8, 4, 22, 0.96);
+  border: 1px solid rgba(0, 234, 255, 0.25);
+  border-radius: 18px 18px 0 0;
+  box-shadow: 0 -10px 40px rgba(0, 0, 0, 0.6);
+}
+.sh-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.sh-head h2 {
+  margin: 4px 0 8px;
+  font-size: 5.5vw;
+  color: #00eaff;
+}
+#settingsClose {
+  appearance: none;
+  border: none;
+  background: none;
+  color: #cfe0ff;
+  font-size: 6vw;
+  cursor: pointer;
+  padding: 4px 10px;
+}
+#settings h3 {
+  margin: 14px 0 6px;
+  font-size: 4vw;
+  color: #ff79d4;
+  letter-spacing: 1px;
+}
+#settings .row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 8px 0;
+}
+#settings .row label {
+  display: flex;
+  justify-content: space-between;
+  font-size: 3.8vw;
+  color: #cfe0ff;
+}
+#settings .row label span {
+  color: #7ef9ff;
+  font-weight: 700;
+}
+#settings input[type='range'] {
+  width: 100%;
+  accent-color: #00eaff;
+  height: 26px;
+}
+#settings .presets {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+#settings .presets button {
+  flex: 1;
+  min-width: 64px;
+  appearance: none;
+  border: 1px solid rgba(255, 121, 212, 0.4);
+  border-radius: 10px;
+  background: rgba(255, 121, 212, 0.08);
+  color: #ffc7ec;
+  font-size: 3.6vw;
+  font-weight: 700;
+  padding: 9px 4px;
+  cursor: pointer;
+}
+#settings .presets button.active {
+  background: rgba(255, 121, 212, 0.3);
+  color: #fff;
+}
+#settings .note {
+  margin: 10px 0 2px;
+  font-size: 3.2vw;
+  color: #8a93b8;
+}
+#settings .eras {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+#settings .eras label {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  font-size: 3.6vw;
+  color: #cfe0ff;
+  cursor: pointer;
+}
+#settings .eras input {
+  width: 18px;
+  height: 18px;
+  accent-color: #6ae6ff;
+}
+@media (min-width: 640px) {
+  .ghost {
+    font-size: 16px;
+  }
+  .sh-head h2 {
+    font-size: 26px;
+  }
+  #settings h3 {
+    font-size: 16px;
+  }
+  #settings .row label,
+  #settings .presets button {
+    font-size: 15px;
+  }
+  #settings .note {
+    font-size: 13px;
+  }
+  #settingsClose {
+    font-size: 26px;
+  }
+}
+
+@media (min-width: 640px) {
+  #score {
+    font-size: 64px;
+  }
+  #best {
+    font-size: 18px;
+  }
+  #session {
+    font-size: 16px;
+  }
+  .panel h1 {
+    font-size: 64px;
+  }
+  .panel #msg {
+    font-size: 18px;
+  }
+  .panel .hint {
+    font-size: 14px;
+  }
+  #startBtn {
+    font-size: 24px;
+  }
+}
