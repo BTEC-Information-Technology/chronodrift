@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover"
+    />
+    <meta name="theme-color" content="#05010f" />
+    <title>Chrono Drift</title>
+  </head>
+  <body>
+    <canvas id="game"></canvas>
+
+    <div id="hud">
+      <div id="score">0</div>
+      <div id="best">Best: 0</div>
+      <div id="session">Session: 0</div>
+    </div>
+
+    <div id="coins">◈ 0</div>
+    <div id="pickup"></div>
+    <div id="era"></div>
+
+    <div id="overlay" class="show">
+      <div class="panel">
+        <h1>CHRONO<span>DRIFT</span></h1>
+        <p id="msg">Swipe left/right · up = jump · down = slide</p>
+        <button id="startBtn">START</button>
+        <button id="settingsBtn" class="ghost">⚙ Settings</button>
+        <p class="hint">(on PC: ← → ↑ ↓ or A/D/W/S, Space)</p>
+        <p class="hint" id="ver">build —</p>
+      </div>
+    </div>
+
+    <div id="settings">
+      <div class="sheet">
+        <div class="sh-head">
+          <h2>Settings</h2>
+          <button id="settingsClose">✕</button>
+        </div>
+
+        <h3>Camera</h3>
+        <div class="row"><label>Height <span id="camHeightVal"></span></label><input id="camHeight" type="range" min="1.5" max="7" step="0.1" /></div>
+        <div class="row"><label>Distance <span id="camDistanceVal"></span></label><input id="camDistance" type="range" min="5" max="14" step="0.1" /></div>
+        <div class="row"><label>Tilt <span id="camTiltVal"></span></label><input id="camTilt" type="range" min="0.2" max="3" step="0.05" /></div>
+        <div class="row"><label>FOV <span id="camFovVal"></span></label><input id="camFov" type="range" min="50" max="80" step="1" /></div>
+
+        <h3>Difficulty</h3>
+        <div class="presets">
+          <button data-preset="Relaxat">Relaxed</button>
+          <button data-preset="Normal">Normal</button>
+          <button data-preset="Rapid">Fast</button>
+          <button data-preset="Extrem">Extreme</button>
+        </div>
+        <div class="row"><label>Speed <span id="speedMultVal"></span></label><input id="speedMult" type="range" min="0.7" max="1.6" step="0.01" /></div>
+        <div class="row"><label>Density <span id="densityMultVal"></span></label><input id="densityMult" type="range" min="0.6" max="1.5" step="0.01" /></div>
+        <p class="note">Harder = higher score (global leaderboard).</p>
+
+        <h3>Eras (TEST)</h3>
+        <div class="eras">
+          <label><input type="checkbox" class="eraChk" data-era="0" /> Neo-Cyberpunk</label>
+          <label><input type="checkbox" class="eraChk" data-era="1" /> Prehistoric</label>
+          <label><input type="checkbox" class="eraChk" data-era="2" /> Ancient-Mythological</label>
+          <label><input type="checkbox" class="eraChk" data-era="3" /> Solarpunk</label>
+          <label><input type="checkbox" class="eraChk" data-era="4" /> Unknown Future</label>
+        </div>
+        <p class="note">Only the checked eras appear in a run (bouncing between them). All checked = normal game.</p>
+      </div>
+    </div>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

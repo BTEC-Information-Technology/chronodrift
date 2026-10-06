@@ -1,0 +1,15 @@
+{
+  // Build:  npm run build
+  // Deploy: npx wrangler deploy (Cloudflare Workers Builds runs both on every push to main)
+  // Incubator phase: runs on chronodrift.fun-zone.app. On "graduation" it moves to chronodrift.app.
+  "name": "chronodrift",
+  "compatibility_date": "2025-01-01",
+  "assets": {
+    "directory": "./dist",
+    "not_found_handling": "single-page-application"
+  },
+  "routes": [
+    { "pattern": "chronodrift.fun-zone.app", "custom_domain": true },
+    { "pattern": "chronodrift.play-zone.app", "custom_domain": true }
+  ]
+}
