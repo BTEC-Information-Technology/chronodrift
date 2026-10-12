@@ -55,6 +55,7 @@ const AIR_MARGIN = 0.4; // above this height the player counts as "jumping" → 
 const RAMP_LEN = 3.6; // length of the ramp nose in front of a climbable train (slope towards the player)
 const COYOTE_TIME = 0.18; // grace: you can still jump briefly after leaving the support
 const DEATH_DELAY = 1.3; // delay before the overlay, so the death animation is visible
+const DEATH_BACK = 1.0; // on death the visual character is eased back (towards the camera) so the fall does not sink into the obstacle
 const COMBO_WINDOW = 3; // seconds without a core → the combo resets
 const MAX_MULT = 5; // maximum combo multiplier
 
@@ -140,6 +141,8 @@ export class Game {
   private supportY = 0; // height of the current support (ground=0 or a train roof)
   private coyoteT = 0; // grace window for jumping after leaving the support
   private deathT = 0; // death animation countdown before the overlay
+  private deathFloor = 0; // where the body comes to rest after death (ground or the roof it was on)
+  private deathBack = 0; // current backward offset of the visual character while dying
   private worldDist = 0; // total distance travelled (drives the curvature)
   private curveUniform = { value: new THREE.Vector2(0, 0) }; // shared curvature uniform
   private seg!: { type: 'straight' | 'arc'; end: number; R: number; D: number }; // current road segment
@@ -1483,6 +1486,7 @@ export class Game {
     if (this.state === 'playing') this.update(dt);
     else if (this.state === 'over' && this.deathT > 0) {
       this.deathT -= dt;
+      this.deathFall(dt);
       if (this.deathT <= 0) {
         this.deathT = 0;
         this.onGameOver?.(Math.floor(this.score)); // overlay after the death animation
@@ -1775,8 +1779,24 @@ export class Game {
   private gameOver() {
     if (this.state !== 'playing') return;
     this.state = 'over';
+    // A body that dies in the air keeps falling: onto the roof it was standing on, otherwise to the ground.
+    this.deathFloor = this.supportY > 0 && this.py <= this.supportY + 0.1 ? this.supportY : 0;
+    this.deathBack = 0;
     this.character?.setState('dead');
     this.deathT = DEATH_DELAY; // the overlay appears after the collapse is visible
+  }
+
+  /** Death physics: gravity until the body rests on its floor, and an ease-back so the collapse clears the obstacle. */
+  private deathFall(dt: number) {
+    if (this.py > this.deathFloor) {
+      this.vy += GRAVITY * dt;
+      this.py = Math.max(this.deathFloor, this.py + this.vy * dt);
+    } else {
+      this.vy = 0;
+    }
+    this.deathBack = damp(this.deathBack, DEATH_BACK, 8, dt);
+    this.player.position.set(this.px, this.py + PLAYER_H / 2, PLAYER_Z);
+    this.character?.group.position.set(this.px, this.py, PLAYER_Z + this.deathBack);
   }
 
   // --- Input ---
