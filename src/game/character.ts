@@ -29,6 +29,7 @@ export class CharacterController {
   private trim?: NeonTrim;
   private bodyMat?: THREE.MeshStandardMaterial;
   private tint = new THREE.Color(0x00eaff);
+  private pendingRun = false; // run requested while a run-and-jump clip still has its landing roll to play
 
   constructor(
     url: string,
@@ -90,6 +91,13 @@ export class CharacterController {
    */
   setState(state: CharState, airtime = 0) {
     if (!this.ready || state === this.state) return;
+    // Landing from a run-and-jump: let the clip finish its roll before running again (unless something else happens).
+    if (state === 'run' && this.state === 'jumpObstacle' && this.current) {
+      this.state = state;
+      this.pendingRun = true;
+      return;
+    }
+    this.pendingRun = false;
     this.state = state;
     const name = this.clips[state];
     if (JUMP_STATES.has(state)) {
@@ -115,5 +123,12 @@ export class CharacterController {
 
   update(dt: number) {
     this.mixer?.update(dt);
+    if (this.pendingRun && this.current) {
+      const dur = this.current.getClip().duration;
+      if (this.current.time >= dur - 0.2 || !this.current.isRunning()) {
+        this.pendingRun = false;
+        this.play(this.clips.run, 0.2);
+      }
+    }
   }
 }
