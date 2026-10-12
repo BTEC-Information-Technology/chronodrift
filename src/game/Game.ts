@@ -26,7 +26,8 @@ import { mulberry32, randInt, weighted } from './rng';
 import { ERAS, RIFT_COLOR, type EraPalette } from './eras';
 import { DIFFICULTY, sampleDifficulty } from './difficulty';
 import type { ObType, SimpleType } from './types';
-import { CharacterController } from './character';
+import { CharacterController, type CharState } from './character';
+import CLIP_WINDOWS from './neon-outlaw.clips.json';
 import type { Settings } from './settings';
 
 const CAM_LOOK_Z = -22; // fixed look-ahead distance the camera points at
@@ -121,6 +122,7 @@ export class Game {
   private camera: THREE.PerspectiveCamera;
   private player: THREE.Mesh;
   private character?: CharacterController;
+  private airborneKind?: CharState; // jump clip chosen at take-off, kept until landing
   private grounds: THREE.Group[] = [];
   private pools: Record<SimpleType, Ob[]> = { block: [], overhead: [], wall: [], core: [] };
   private geo: Record<SimpleType, THREE.BufferGeometry>;
@@ -304,10 +306,13 @@ export class Game {
     this.player = new THREE.Mesh(new THREE.BoxGeometry(PLAYER_W, PLAYER_H, PLAYER_D), this.pMat);
     this.scene.add(this.player);
 
-    // Animated character (CC0 placeholder). The box stays as a fallback until the model loads.
+    // Animated character: the Neon Outlaw (generated model, neon lines built on the bones).
+    // The box stays as a fallback until the model loads. Three jump clips: plain jump, mounting a
+    // train (tuck), clearing an obstacle (run-and-jump); the one to play is chosen at take-off.
     this.character = new CharacterController(
-      '/models/RobotExpressive.glb',
-      { run: 'Running', jump: 'Jump', slide: 'Sitting', dead: 'Death' },
+      '/models/neon-outlaw.glb',
+      { run: 'RunFast', jump: 'Regular_Jump', jumpTrain: 'Tuck_Jump', jumpObstacle: 'Run_and_Jump', slide: 'slide_light', dead: 'dying_backwards' },
+      CLIP_WINDOWS,
       PLAYER_H,
       () => {
         this.player.visible = false;
@@ -409,6 +414,7 @@ export class Game {
     set(this.railRMat.emissive, from.railR, to.railR, flash * 0.7);
     set(this.lineMat.emissive, from.line, to.line, flash * 0.4);
     set(this.pMat.emissive, from.player, to.player, flash * 0.3);
+    this.character?.setTint(this.pMat.emissive);
     set(this.mat.block.emissive, from.block, to.block, flash * 0.3);
     set(this.mat.overhead.emissive, from.overhead, to.overhead, flash * 0.3);
     set(this.mat.wall.emissive, from.wall, to.wall, flash * 0.3);
@@ -1611,10 +1617,11 @@ export class Game {
     // Animated character — position + state (run/jump/slide)
     if (this.character) {
       this.character.group.position.set(this.px, this.py, PLAYER_Z);
-      let st: 'run' | 'jump' | 'slide' = 'run';
+      let st: CharState = 'run';
       if (this.slideT > 0) st = 'slide';
-      else if (this.py > this.supportY + 0.05) st = 'jump';
-      this.character.setState(st);
+      else if (this.py > this.supportY + 0.05) st = this.airborneKind ?? (this.airborneKind = this.pickJumpKind());
+      else this.airborneKind = undefined;
+      this.character.setState(st, JUMP_AIRTIME);
     }
 
     // Simple obstacles — movement, collisions, recycling
@@ -1773,6 +1780,23 @@ export class Game {
   }
 
   // --- Input ---
+  /** What the jump is for: a climbable train nose ahead → tuck; a low block ahead → run-and-jump; else plain. */
+  private pickJumpKind(): CharState {
+    const reach = this.speed * JUMP_AIRTIME * 1.15 + 2; // distance the world travels during one jump
+    const lane = this.targetLane;
+    for (const o of this.trains) {
+      if (!o.active || !o.trampoline || o.lane !== lane) continue;
+      const frontZ = o.mesh.position.z + o.len / 2;
+      if (frontZ < PLAYER_Z + 1 && frontZ > PLAYER_Z - reach) return 'jumpTrain';
+    }
+    for (const o of this.pools.block) {
+      if (!o.active || o.lane !== lane) continue;
+      const z = o.mesh.position.z;
+      if (z < PLAYER_Z + 1 && z > PLAYER_Z - reach) return 'jumpObstacle';
+    }
+    return 'jump';
+  }
+
   private moveLane(d: number) {
     this.targetLane = clamp(this.targetLane + d, 0, 2);
   }

@@ -1,0 +1,32 @@
+{
+  "RunFast": {
+    "duration": 0.467,
+    "takeoff": 0,
+    "landing": 0.467
+  },
+  "Regular_Jump": {
+    "duration": 1.833,
+    "takeoff": 0.533,
+    "landing": 1.067
+  },
+  "slide_light": {
+    "duration": 1.5,
+    "takeoff": 0,
+    "landing": 1.5
+  },
+  "dying_backwards": {
+    "duration": 2.2,
+    "takeoff": 0,
+    "landing": 2.2
+  },
+  "Run_and_Jump": {
+    "duration": 2.333,
+    "takeoff": 0.533,
+    "landing": 1.2
+  },
+  "Tuck_Jump": {
+    "duration": 1.967,
+    "takeoff": 0.733,
+    "landing": 1.267
+  }
+}

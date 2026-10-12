@@ -38,7 +38,7 @@ Custom domains come from `wrangler.jsonc` (`chronodrift.fun-zone.app` and
 ## Conventions
 
 - **`BUILD` in `src/main.ts`** = the number shown on the start screen. Increment it on every
-  change so you can confirm on the phone that the new code actually loaded. (Current: **build 70**.)
+  change so you can confirm on the phone that the new code actually loaded. (Current: **build 71**.)
 - Collisions and game logic live in **logical space** (lanes `LANE_X`, `px/py`); models and
   curvature are **visual only**, so assets can be swapped in without touching gameplay.
 - Commit messages are written in **English**.
@@ -49,10 +49,17 @@ Custom domains come from `wrangler.jsonc` (`chronodrift.fun-zone.app` and
 - `constants.ts` — lanes, speeds, sizes, `CORE_SCORE`.
 - `difficulty.ts` — data-driven curve (score keyframes) + speed bursts.
 - `eras.ts` — era palettes (index 0 = Neo-Cyberpunk, the "home" era).
-- `character.ts` — `CharacterController` (GLB + AnimationMixer, run/jump/slide/dead states).
+- `character.ts` — `CharacterController` (GLB + AnimationMixer; states run / jump / jumpTrain /
+  jumpObstacle / slide / dead; jump clips are started at their take-off frame and time-scaled to
+  the physics airtime; era tint for the neon).
+- `neonTrim.ts` — the neon lines as geometry: tubes sampled on the suit surface at bind pose and
+  attached to the bones (legs, arms, chest V, back lines, belt, visor, helmet crest).
+- `neon-outlaw.clips.json` — per-clip airborne window (take-off / landing), generated with the model.
 - `rng.ts` / `math.ts` / `types.ts` — utilities (seeded mulberry32, lerp/damp, types).
-- `public/models/RobotExpressive.glb` — placeholder character, **CC0** (from the three.js
-  examples); will be replaced.
+- `public/models/neon-outlaw.glb` — the Neon Outlaw (799 KB): mesh + rig generated with Meshy from
+  the owner's concept sheet (multi-image to 3D), matte suit texture (neon painted out), backpack
+  core as emissive map, clips RunFast / Regular_Jump / Tuck_Jump / Run_and_Jump / slide_light /
+  dying_backwards. Hips X/Z translation locked (the game owns the position); Y kept as delivered.
 
 ## Current state (DONE)
 
@@ -70,7 +77,10 @@ Custom domains come from `wrangler.jsonc` (`chronodrift.fun-zone.app` and
   Prehistoric / Ancient-Mythological / Solarpunk, otherwise home); excursion of 30–90 s, then
   return. The switch is telegraphed by a portal ring; **short palette morph on crossing, no shake**.
 - **World curvature** through a bend shader (vertex, `offset × distance²` in view space).
-- **Animated character** (CC0 placeholder) with run/jump/slide/death animations; death delay.
+- **Neon Outlaw character** (generated from the owner's concept): matte black suit, neon lines as
+  bone-attached geometry tinted by the era, backpack core. Clips: run, three jumps (plain; tuck when
+  mounting a climbable train; run-and-jump when clearing a block — chosen at take-off by looking
+  ahead in the lane), slide, death; death delay.
 - **Cores:** +50 × **combo** (×5 max, decays after 3 s), persistent **coin counter**, "+X" feedback.
 - **Obstacles/core** in stylised low-poly (RoundedBox + flatShading, crystal core).
 - **Settings panel** (gear icon on the start screen): live-adjustable camera (height / distance /
@@ -117,8 +127,9 @@ Custom domains come from `wrangler.jsonc` (`chronodrift.fun-zone.app` and
    - REMAINING: **diegetic ads** on the Ancient buildings (satirical names) and on the Solarpunk
      eco-towers/panels (holo-eco).
 2. **Audio** — SFX (jump/collect/crash/mount/portal) + music per era (CC0 first).
-3. **Themed character** Neon Outlaw — reference **MDK / Kurt Hectic** (coil-suit, visor, lanky
-   silhouette).
+3. **Character polish** — DONE as a first version (see above). Open: a jump clip with knees tucked
+   to the chest (no library/text-to-motion clip was convincing; Mixamo refused the rigged upload),
+   smoothing of the leg lines at the knee, a flat visor band instead of a tube.
 4. Normalise the test values; possibly badges at coin/score thresholds.
 5. Later: leaderboard (Cloudflare Worker + D1) — **a single global ranking** (harder = more
    points); deterministic ghost; monetisation (billboards + interstitial + rewarded).
