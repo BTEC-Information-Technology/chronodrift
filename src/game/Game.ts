@@ -35,6 +35,12 @@ import CLIP_WINDOWS from './neon-outlaw.clips.json';
 import { makeFacadeTextures, makeFacade, makeBillboardTextures, SkyTraffic, SkyVehicles, AD_ASPECT, type AdFormat, type FacadeSet } from './cyber';
 import { Rain } from './rain';
 import { Portal } from './portal';
+import { buildBlock, buildOverhead, buildWall, buildTrain, type ObstacleMats, type TrainMats } from './obstacles';
+import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
+import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
+import { makeCityEnvMap } from './cyber';
 import type { Settings } from './settings';
 
 const CAM_LOOK_Z = -22; // fixed look-ahead distance the camera points at
@@ -95,6 +101,7 @@ interface Ob {
   roofY: number; // roof height (trains); 0 for simple obstacles
   ramp?: THREE.Mesh; // ramp nose (climbable only) — marked by ORIENTATION, not just colour
   decor?: THREE.Group; // sci-fi intrusion decor (Prehistoric/Ancient) — vegetation/debris on the train
+  look?: THREE.Group; // Neo-Cyberpunk look (procedural, obstacles.ts); the plain box stays the collision proxy
 }
 
 /** Unit triangular wedge: a ramp rising from the ground (tip towards the player) up to the roof.
@@ -139,6 +146,12 @@ export class Game {
 
   // Trains (separate pool — variable-length geometry)
   private trains: Ob[] = [];
+  private hiddenMat!: THREE.MeshBasicMaterial;
+  private lookBody!: THREE.MeshStandardMaterial;
+  private lookLight!: THREE.MeshBasicMaterial;
+  private trainLook!: { ride: TrainMats; block: TrainMats }; // Neo-Cyberpunk train materials per type (neon colour differs)
+  private composer!: EffectComposer; // render + bloom (the neon glow) + output
+  private lookAccent!: { block: THREE.MeshStandardMaterial; overhead: THREE.MeshStandardMaterial; wall: THREE.MeshStandardMaterial; ride: THREE.MeshStandardMaterial; blockT: THREE.MeshStandardMaterial };
   private trainGeo = new RoundedBoxGeometry(1, 1, 1, 2, 0.06);
   private rampGeo = makeRampGeometry();
   private trainBlockMat!: THREE.MeshStandardMaterial;
@@ -338,11 +351,20 @@ export class Game {
     this.camera.position.set(0, this.camBaseY, this.camBaseZ);
     this.camera.lookAt(0, this.camLookY, CAM_LOOK_Z);
 
+    // Post: bloom makes the emissive neon (HDR colours > 1) glow; the rest of the scene stays under the threshold.
+    this.composer = new EffectComposer(this.renderer);
+    this.composer.addPass(new RenderPass(this.scene, this.camera));
+    this.composer.addPass(new UnrealBloomPass(new THREE.Vector2(1, 1), 0.45, 0.3, 0.9));
+    this.composer.addPass(new OutputPass());
+
     this.hemi = new THREE.HemisphereLight(0x6688ff, 0x140022, 1.0);
     this.scene.add(this.hemi);
-    const dir = new THREE.DirectionalLight(0xffffff, 0.55);
+    const dir = new THREE.DirectionalLight(0xffffff, 0.8); // key light
     dir.position.set(3, 8, 4);
     this.scene.add(dir);
+    const rim = new THREE.DirectionalLight(0x00eaff, 0.5); // rim light from behind the obstacles (outlines the hulls)
+    rim.position.set(-6, 5, -8);
+    this.scene.add(rim);
     this.buildSky();
     this.buildAmbient();
     this.buildBackdrops();
@@ -380,6 +402,33 @@ export class Game {
       wall: this.emissiveMat(SPEC.wall.color, 0.5, true),
       core: this.emissiveMat(SPEC.core.color, 1.1, true),
     };
+    // Neo-Cyberpunk looks: dark bodies with lit accents in the type's colour (the accents follow the era palette)
+    this.hiddenMat = new THREE.MeshBasicMaterial({ visible: false });
+    this.lookBody = new THREE.MeshStandardMaterial({ color: 0x10131f, emissive: 0x05060c, emissiveIntensity: 0.5, roughness: 0.55, metalness: 0.35, flatShading: true });
+    this.lookLight = new THREE.MeshBasicMaterial({ color: 0xeaf6ff, toneMapped: false });
+    this.lookAccent = {
+      block: this.emissiveMat(SPEC.block.color, 1.6, true),
+      overhead: this.emissiveMat(SPEC.overhead.color, 1.6, true),
+      wall: this.emissiveMat(SPEC.wall.color, 1.5, true),
+      ride: this.emissiveMat(TRAIN_RIDE_COLOR, 1.5, true),
+      blockT: this.emissiveMat(TRAIN_BLOCK_COLOR, 1.4, true),
+    };
+    this.extraCurveMats.push(this.lookBody, this.lookLight, ...Object.values(this.lookAccent));
+    // Maglev train materials: smooth-shaded hull with city reflections; neon rails in the type's colour; HDR lights for the bloom.
+    const env = makeCityEnvMap(this.renderer);
+    const trainBase = {
+      body: new THREE.MeshStandardMaterial({ color: 0x1b1f33, roughness: 0.42, metalness: 0.25, envMap: env, envMapIntensity: 1.0 }),
+      dark: new THREE.MeshStandardMaterial({ color: 0x0a0b14, roughness: 0.6, metalness: 0.3 }),
+      pad: new THREE.MeshStandardMaterial({ color: 0x15172a, roughness: 0.55, metalness: 0.4 }),
+      accent: new THREE.MeshStandardMaterial({ color: 0xd9dde9, roughness: 0.5, metalness: 0.1, envMap: env, envMapIntensity: 0.6 }),
+      glass: new THREE.MeshStandardMaterial({ color: 0x0b1a2c, roughness: 0.08, metalness: 0.9, envMap: env, envMapIntensity: 1.6, emissive: 0x062033, emissiveIntensity: 0.5 }),
+      shield: new THREE.MeshStandardMaterial({ color: 0x1a3550, roughness: 0.06, metalness: 0.85, envMap: env, envMapIntensity: 1.8, emissive: 0x0c2a44, emissiveIntensity: 0.7 }),
+      red: new THREE.MeshBasicMaterial({ color: new THREE.Color(1.15, 0, 0), toneMapped: false }),
+      white: new THREE.MeshBasicMaterial({ color: new THREE.Color(1.6, 1.6, 1.7), toneMapped: false }),
+    };
+    const neonOf = (c: number) => new THREE.MeshBasicMaterial({ color: new THREE.Color(c).multiplyScalar(1.5), toneMapped: false });
+    this.trainLook = { ride: { ...trainBase, neon: neonOf(TRAIN_RIDE_COLOR) }, block: { ...trainBase, neon: neonOf(TRAIN_BLOCK_COLOR) } };
+    this.extraCurveMats.push(...Object.values(trainBase), this.trainLook.ride.neon, this.trainLook.block.neon);
     this.trainBlockMat = this.emissiveMat(TRAIN_BLOCK_COLOR, 0.4, true);
     this.trainRideMat = this.emissiveMat(TRAIN_RIDE_COLOR, 0.5, true);
     // Lush vegetation (Prehistoric) and damaged metal debris (Ancient) on the train.
@@ -467,6 +516,9 @@ export class Game {
     set(this.mat.block.emissive, from.block, to.block, flash * 0.3);
     set(this.mat.overhead.emissive, from.overhead, to.overhead, flash * 0.3);
     set(this.mat.wall.emissive, from.wall, to.wall, flash * 0.3);
+    set(this.lookAccent.block.emissive, from.block, to.block, flash * 0.3);
+    set(this.lookAccent.overhead.emissive, from.overhead, to.overhead, flash * 0.3);
+    set(this.lookAccent.wall.emissive, from.wall, to.wall, flash * 0.3);
     set(this.mat.core.emissive, from.core, to.core, flash * 0.3);
     // Sky + stars
     set(this.skyUniforms.uTop.value, from.skyTop, to.skyTop, flash * 0.2);
@@ -1300,6 +1352,11 @@ export class Game {
     if (!ob) {
       const mesh = new THREE.Mesh(this.geo[type], this.mat[type]);
       ob = { mesh, type, lane, active: false, len: 0, trampoline: false, roofY: 0 };
+      if (type !== 'core') {
+        const lm: ObstacleMats = { body: this.lookBody, accent: this.lookAccent[type], light: this.lookLight };
+        ob.look = type === 'block' ? buildBlock(lm) : type === 'overhead' ? buildOverhead(lm) : buildWall(lm);
+        mesh.add(ob.look); // follows the collision box (unscaled)
+      }
       this.pools[type].push(ob);
       this.scene.add(mesh);
     }
@@ -1308,6 +1365,11 @@ export class Game {
     ob.mesh.visible = true;
     ob.mesh.position.set(LANE_X[lane], yOverride ?? SPEC[type].y, zOverride ?? SPAWN_Z);
     ob.mesh.rotation.set(0, 0, 0);
+    if (ob.look) {
+      const neo = this.spawnEra() === 0;
+      ob.look.visible = neo;
+      ob.mesh.material = neo ? this.hiddenMat : this.mat[type];
+    }
   }
 
   // --- Trains & generator (Increment B) ---
@@ -1341,6 +1403,20 @@ export class Game {
       ob.ramp.position.set(LANE_X[lane], 0, frontZ); // the ramp's z=0 flush with the front face
     } else if (ob.ramp) {
       ob.ramp.visible = false;
+    }
+    // Neo-Cyberpunk: the maglev locomotive (nose = ramp towards the player on the climbable one, tail on the blocking one)
+    if (ob.look) {
+      ob.look.removeFromParent();
+      ob.look.traverse((o) => { if ((o as THREE.Mesh).isMesh) (o as THREE.Mesh).geometry.dispose(); });
+      ob.look = undefined;
+    }
+    if (this.spawnEra() === 0) {
+      ob.look = buildTrain(trampoline ? this.trainLook.ride : this.trainLook.block, len, TRAIN_W, TRAIN_H, RAMP_LEN);
+      ob.look.rotation.y = trampoline ? 0 : Math.PI;
+      ob.look.position.set(LANE_X[lane], 0, frontZ - len / 2);
+      this.scene.add(ob.look);
+      ob.mesh.material = this.hiddenMat;
+      if (ob.ramp) ob.ramp.visible = false; // the hull has its own wedge nose
     }
     this.decorateTrain(ob, lane, frontZ, len);
   }
@@ -1527,6 +1603,7 @@ export class Game {
       o.mesh.visible = false;
       if (o.ramp) o.ramp.visible = false;
       if (o.decor) o.decor.visible = false;
+      if (o.look) o.look.visible = false;
     }
     this.supportY = 0;
     this.lastFreeLane = 1;
@@ -1844,6 +1921,7 @@ export class Game {
       o.mesh.position.z += move;
       if (o.ramp) o.ramp.position.z += move; // the ramp nose moves with the train
       if (o.decor) o.decor.position.z += move; // the sci-fi decor moves with the train
+      if (o.look) o.look.position.z += move;
       const cz = o.mesh.position.z;
       const half = o.len / 2;
       if (cz - half > DESPAWN_Z) {
@@ -1851,6 +1929,7 @@ export class Game {
         o.mesh.visible = false;
         if (o.ramp) o.ramp.visible = false;
         if (o.decor) o.decor.visible = false;
+        if (o.look) o.look.visible = false;
         continue;
       }
       if (Math.abs(this.px - LANE_X[o.lane]) > PLAYER_W / 2 + TRAIN_W / 2) continue;
@@ -2002,6 +2081,7 @@ export class Game {
       o.mesh.position.z += dz;
       if (o.ramp) o.ramp.position.z += dz;
       if (o.decor) o.decor.position.z += dz;
+      if (o.look) o.look.position.z += dz;
     }
     for (const b of this.buildings) if (b.active) b.g.position.z += dz;
     for (const sc of this.scenery) if (sc.active) sc.g.position.z += dz;
@@ -2042,6 +2122,14 @@ export class Game {
   }
 
   // --- Input ---
+  /** The era a newly spawned object belongs to: while a portal is open ahead (not yet crossed) or the palette
+   * is still morphing, everything spawned at the horizon is already on the other side → destination era. */
+  private spawnEra(): number {
+    if (this.trans) return this.trans.to;
+    if (this.portal.active && !this.portal.crossed && this.pendingEra >= 0) return this.pendingEra;
+    return this.era;
+  }
+
   /** What the jump is for: a climbable train nose ahead → tuck; a low block ahead → run-and-jump; else plain. */
   private pickJumpKind(): CharState {
     const reach = this.speed * JUMP_AIRTIME * 1.15 + 2; // distance the world travels during one jump
@@ -2128,11 +2216,12 @@ export class Game {
     const w = window.innerWidth;
     const h = window.innerHeight;
     this.renderer.setSize(w, h, false);
+    this.composer.setSize(w, h);
     this.camera.aspect = w / h;
     this.camera.updateProjectionMatrix();
   };
 
   private render() {
-    this.renderer.render(this.scene, this.camera);
+    this.composer.render();
   }
 }

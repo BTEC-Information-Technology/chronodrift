@@ -392,3 +392,40 @@ export class SkyVehicles {
     }
   }
 }
+
+/**
+ * Small equirectangular "neon city at night" environment (dark sky, a band of coloured window lights at the
+ * horizon) → PMREM texture for the reflections on the train hulls. Generated once; 256×128 is plenty.
+ */
+export function makeCityEnvMap(renderer: THREE.WebGLRenderer): THREE.Texture {
+  const c = document.createElement('canvas');
+  c.width = 256;
+  c.height = 128;
+  const g = c.getContext('2d')!;
+  const sky = g.createLinearGradient(0, 0, 0, 128);
+  sky.addColorStop(0, '#05030f');
+  sky.addColorStop(0.45, '#1a0c3a');
+  sky.addColorStop(0.5, '#2a1458');
+  sky.addColorStop(0.56, '#07040f');
+  sky.addColorStop(1, '#020108');
+  g.fillStyle = sky;
+  g.fillRect(0, 0, 256, 128);
+  const cols = ['#00eaff', '#ff36c8', '#ffffff', '#ffd23a', '#7eff9a'];
+  let seed = 7;
+  const rnd = () => { seed = (seed * 16807) % 2147483647; return seed / 2147483647; };
+  for (let i = 0; i < 90; i++) {
+    const x = rnd() * 256, w = 3 + rnd() * 14, h = 4 + rnd() * 12;
+    g.globalAlpha = 0.3 + rnd() * 0.5;
+    g.fillStyle = cols[(rnd() * 5) | 0];
+    g.fillRect(x, 64 - h + rnd() * 4, w, h);
+  }
+  g.globalAlpha = 1;
+  const tex = new THREE.CanvasTexture(c);
+  tex.mapping = THREE.EquirectangularReflectionMapping;
+  tex.colorSpace = THREE.SRGBColorSpace;
+  const pmrem = new THREE.PMREMGenerator(renderer);
+  const env = pmrem.fromEquirectangular(tex).texture;
+  pmrem.dispose();
+  tex.dispose();
+  return env;
+}

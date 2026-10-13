@@ -38,7 +38,7 @@ Custom domains come from `wrangler.jsonc` (`chronodrift.fun-zone.app` and
 ## Conventions
 
 - **`BUILD` in `src/main.ts`** = the number shown on the start screen. Increment it on every
-  change so you can confirm on the phone that the new code actually loaded. (Current: **build 91**.)
+  change so you can confirm on the phone that the new code actually loaded. (Current: **build 94**.)
 - Collisions and game logic live in **logical space** (lanes `LANE_X`, `px/py`); models and
   curvature are **visual only**, so assets can be swapped in without touching gameplay.
 - Commit messages are written in **English**.
@@ -54,6 +54,10 @@ Custom domains come from `wrangler.jsonc` (`chronodrift.fun-zone.app` and
   the physics airtime; era tint for the neon).
 - `neonTrim.ts` — the neon lines as geometry: tubes sampled on the suit surface at bind pose and
   attached to the bones (legs, arms, chest V, back lines, belt, visor, helmet crest).
+- `obstacles.ts` — procedural obstacle looks (block / overhead / wall) and `buildTrain`: the maglev
+  locomotive + wagons (one rounded profile swept along the length, wedge nose, windows, neon rails,
+  red end bars, headlight, pads). Every colour/light comes from a `TrainMats` set, so other eras can
+  pass unlit, sun-lit materials over the same geometry.
 - `neon-outlaw.clips.json` — per-clip airborne window (take-off / landing), generated with the model.
 - `rng.ts` / `math.ts` / `types.ts` — utilities (seeded mulberry32, lerp/damp, types).
 - `public/models/neon-outlaw.glb` — the Neon Outlaw (799 KB): mesh + rig generated with Meshy from
@@ -90,8 +94,17 @@ Custom domains come from `wrangler.jsonc` (`chronodrift.fun-zone.app` and
   strips in the building's colour, satirical billboards (10 generated designs), rooftop props, a skyline
   with the same facades, sky traffic and a giant holographic ad that cycles through the ads every
   10-15 s. Billboards come in square / portrait / landscape and keep their aspect; they flicker like
-  neon. Rain is long streaks (reduces visibility, on purpose). Obstacles, trains and the road are
-  unchanged (a hologram/maglev attempt and a wet-asphalt effect were reverted).
+  neon. Rain is long streaks (reduces visibility, on purpose). The road stays matte (a wet-asphalt
+  effect was reverted).
+- **Maglev trains (build 94):** procedural locomotive and wagons after the approved concept, smooth-shaded,
+  with city reflections on the hull, neon rails in the type's colour (teal climbable / red blocking),
+  red bars on every flat end, a white headlight on the nose. Trains shorter than 13 units are a single
+  locomotive; longer ones add wagons. AI-generated meshes were tried and rejected: image-to-3D gives
+  dented hard surfaces, no emissive channel and (after simplification) zero-length normals that turn
+  into NaN under bloom. Keep hard-surface props procedural.
+- **Post-processing:** `EffectComposer` + `UnrealBloomPass` (threshold 0.9, so only HDR neon glows) +
+  `OutputPass`; key light + cyan rim light. Very bright reds come out orange through tone mapping, so
+  the red lights stay at ~1.15 and get no bloom.
 - **Sky vehicles:** 14 merged low-poly flyers (headlights, taillight bar, underglow) crossing the skyline.
 - **Portal as a time distortion** (`portal.ts`): spinning spiral vortex + particles spiralling in + flare, no
   rings, tinted with the destination palette; the crossing shakes the camera for 1 s (`SHAKE_DUR`).
