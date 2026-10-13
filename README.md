@@ -38,7 +38,7 @@ Custom domains come from `wrangler.jsonc` (`chronodrift.fun-zone.app` and
 ## Conventions
 
 - **`BUILD` in `src/main.ts`** = the number shown on the start screen. Increment it on every
-  change so you can confirm on the phone that the new code actually loaded. (Current: **build 71**.)
+  change so you can confirm on the phone that the new code actually loaded. (Current: **build 85**.)
 - Collisions and game logic live in **logical space** (lanes `LANE_X`, `px/py`); models and
   curvature are **visual only**, so assets can be swapped in without touching gameplay.
 - Commit messages are written in **English**.
@@ -82,6 +82,16 @@ Custom domains come from `wrangler.jsonc` (`chronodrift.fun-zone.app` and
   mounting a climbable train; run-and-jump when clearing a block — chosen at take-off by looking
   ahead in the lane), slide, death; death delay.
 - **Cores:** +50 × **combo** (×5 max, decays after 3 s), persistent **coin counter**, "+X" feedback.
+- **Lives** (plan §3.7): with N lives the next one costs N × `LIFE_STEP` points, counter reset on
+  every change of N; crash with spare lives = stop-and-blink respawn (world frozen until the player
+  jumps, slides or changes lane; no action within 3 s = another life lost, new interval), game over only at 0. HUD: hearts + progress bar, toasts.
+- **Neo-Cyberpunk city, first pass:** unique procedural facades per building (portrait windows, cold-to-warm
+  interior light, dark floors, office floors), neon frame as geometry (edge bars + roofline ring) and neon
+  strips in the building's colour, satirical billboards (10 generated designs), rooftop props, a skyline
+  with the same facades, sky traffic and a giant holographic ad that cycles through the ads every
+  10-15 s. Billboards come in square / portrait / landscape and keep their aspect; they flicker like
+  neon. Rain is long streaks (reduces visibility, on purpose). Obstacles, trains and the road are
+  unchanged (a hologram/maglev attempt and a wet-asphalt effect were reverted).
 - **Obstacles/core** in stylised low-poly (RoundedBox + flatShading, crystal core).
 - **Settings panel** (gear icon on the start screen): live-adjustable camera (height / distance /
   tilt / FOV, preview while idle) + difficulty (presets + speed/density sliders = multipliers),
@@ -102,6 +112,8 @@ Custom domains come from `wrangler.jsonc` (`chronodrift.fun-zone.app` and
   trains from the start. "Production" value: ~600 + natural probability.
 - The era roll is already at its real value (1000 pts), but during testing the portal shows up
   rarely (~20% per roll) — it can be raised temporarily for quick verification.
+- `LIFE_STEP = 500` (`constants.ts`) so lives are easy to reach while testing. "Production" value:
+  10,000 (possibly per difficulty preset).
 
 ## Next steps
 

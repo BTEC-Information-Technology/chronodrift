@@ -60,6 +60,43 @@ body {
   text-shadow: 0 0 14px rgba(126, 249, 255, 0.7);
   pointer-events: none;
 }
+#lives {
+  position: fixed;
+  top: max(12px, env(safe-area-inset-top));
+  left: 14px;
+  pointer-events: none;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+#livesIcons {
+  font-size: 5vw;
+  font-weight: 800;
+  color: #ff36c8;
+  letter-spacing: 0.08em;
+  text-shadow: 0 0 14px rgba(255, 54, 200, 0.7);
+}
+#lifeBar {
+  width: 18vw;
+  max-width: 120px;
+  height: 4px;
+  background: rgba(255, 255, 255, 0.14);
+  border-radius: 2px;
+  overflow: hidden;
+}
+#lifeBar i {
+  display: block;
+  height: 100%;
+  width: 0;
+  background: #ff36c8;
+  box-shadow: 0 0 8px rgba(255, 54, 200, 0.8);
+  transition: width 0.15s linear;
+}
+@media (min-width: 640px) {
+  #livesIcons {
+    font-size: 24px;
+  }
+}
 #pickup {
   position: fixed;
   top: 26%;
