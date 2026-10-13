@@ -252,6 +252,43 @@ visor, lanky silhouette, neon accents. To be applied at the final-character step
 - **Palette:** cold blue-violet, ethereal, desaturated + neon accents. **Ads:** NO. **Audio:**
   sparse, otherworldly ambient.
 
+## 3.7. Lives (survival mechanic, decided October 2026)
+
+A run no longer ends at the first crash: the player earns spare lives with points and spends
+them on crashes. The run score keeps running across crashes; game over comes when the last life
+is lost.
+
+**Rule (general formula).** With `N` lives, the next life is earned after `N × LIFE_STEP` more
+points. The intermediate counter resets to zero at the start of a run and **whenever `N` changes**
+(a life gained or lost). Examples with `LIFE_STEP = 10,000`:
+
+| Lives now | Points needed for the next life | Counter resets when |
+|---|---|---|
+| 1 (start) | 10,000 | run starts, or a life was just lost down to 1 |
+| 2 | 20,000 | the 2nd life was just earned, or a life was lost down to 2 |
+| 3 | 30,000 | the 3rd life was just earned, or a life was lost down to 3 |
+
+- `LIFE_STEP` is a tunable constant (`constants.ts`); it may later depend on the chosen
+  difficulty preset. `MAX_LIVES = 5` caps the count so the HUD stays readable.
+- The **run score** drives the counter (not the cumulative session score); lives are not
+  persisted between runs.
+
+**Losing a life (respawn).** The character stops in place and blinks between 100% and 10% opacity,
+twice per second. The world steps back so the character stands just in front of what it hit, and stays
+frozen until the player acts: a jump (over the block, or onto the climbable train), a slide or a
+lane change resumes the world immediately. If the player does nothing for `RESPAWN_TIME = 3 s`,
+the character stays put, **another life is lost** and a new 3 s interval starts; with no life left
+it is game over. The character is invulnerable (and keeps blinking) while frozen and for a short
+grace after resuming, so a lane change started from the stop can complete; then collisions are
+live again. Score does not accrue while the world is frozen.
+
+**HUD.** Top-left: one heart per life and a thin progress bar towards the next life. Toasts:
+"+1 LIFE" on gain, "-1 LIFE" / "LAST LIFE" on loss.
+
+**Interplay.** The planned rewarded "revive" (§6) applies once per run when the lives reach 0.
+Leaderboard scores (§5) are only comparable among runs played with the same rule; the
+deterministic ghost (§7) must record respawns.
+
 ---
 
 ## 4. Required multimedia + recommended vendors + budget

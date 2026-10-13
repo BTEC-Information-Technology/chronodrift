@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { buildNeonTrim, type NeonTrim } from './neonTrim';
 
-export type CharState = 'run' | 'jump' | 'jumpTrain' | 'jumpObstacle' | 'slide' | 'dead';
+export type CharState = 'run' | 'idle' | 'jump' | 'jumpTrain' | 'jumpObstacle' | 'slide' | 'dead';
 // Names of the GLB clips for each state (reconfigurable per model).
 export type CharClips = Record<CharState, string>;
 /** Airborne window of a jump clip (seconds): the clip is played from `takeoff`, scaled so that it reaches `landing` when the physics lands. */
@@ -112,6 +112,18 @@ export class CharacterController {
       return;
     }
     this.play(name, state === 'dead' ? 0.1 : 0.18, state === 'dead');
+  }
+
+  /** Blink/opacity for the whole character (suit + neon), 1 = solid. */
+  setOpacity(a: number) {
+    const mats: THREE.Material[] = [];
+    if (this.bodyMat) mats.push(this.bodyMat);
+    if (this.trim) mats.push(this.trim.material);
+    for (const m of mats) {
+      m.transparent = a < 0.999;
+      m.opacity = a;
+      m.depthWrite = a >= 0.999;
+    }
   }
 
   /** Era tint for all neon lines (the suit texture stays neutral). */

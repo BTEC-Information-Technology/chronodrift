@@ -28,5 +28,10 @@
     "duration": 1.967,
     "takeoff": 0.733,
     "landing": 1.267
+  },
+  "Idle": {
+    "duration": 4.033,
+    "takeoff": 0,
+    "landing": 4.033
   }
 }

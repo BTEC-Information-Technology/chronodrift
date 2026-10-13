@@ -3,6 +3,9 @@ import { RoundedBoxGeometry } from 'three/examples/jsm/geometries/RoundedBoxGeom
 import {
   BLOCK_H,
   CORE_SCORE,
+  LIFE_STEP,
+  MAX_LIVES,
+  RESPAWN_TIME,
   DESPAWN_Z,
   GRAVITY,
   JUMP_V,
@@ -26,8 +29,11 @@ import { mulberry32, randInt, weighted } from './rng';
 import { ERAS, RIFT_COLOR, type EraPalette } from './eras';
 import { DIFFICULTY, sampleDifficulty } from './difficulty';
 import type { ObType, SimpleType } from './types';
+import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { CharacterController, type CharState } from './character';
 import CLIP_WINDOWS from './neon-outlaw.clips.json';
+import { makeFacadeTextures, makeFacade, makeBillboardTextures, SkyTraffic, AD_ASPECT, type AdFormat, type FacadeSet } from './cyber';
+import { Rain } from './rain';
 import type { Settings } from './settings';
 
 const CAM_LOOK_Z = -22; // fixed look-ahead distance the camera points at
@@ -141,6 +147,15 @@ export class Game {
   private supportY = 0; // height of the current support (ground=0 or a train roof)
   private coyoteT = 0; // grace window for jumping after leaving the support
   private deathT = 0; // death animation countdown before the overlay
+  // Lives
+  private lives = 1;
+  private lifeBase = 0; // score at the last change of the lives count
+  private lastLifeProgress = -1;
+  private respawnT = 0; // > 0: world frozen after losing a life, waiting for the player (max RESPAWN_TIME)
+  private frozen = false; // world stopped until the player acts (jump / lane change) or the respawn time runs out
+  private invuln = false; // from the crash until the world runs again AND nothing overlaps the player any more
+  private resumeGrace = 0; // short grace after the world resumes, so a lane change started from the stop can complete
+  private overlapNow = false;
   private deathFloor = 0; // where the body comes to rest after death (ground or the roof it was on)
   private deathBack = 0; // current backward offset of the visual character while dying
   private worldDist = 0; // total distance travelled (drives the curvature)
@@ -173,9 +188,7 @@ export class Game {
   private pteroProg = 0;
   private pteroStartX = 0;
   private pteroDelay = 3;
-  private rainPoints!: THREE.Points;
-  private rainMat!: THREE.PointsMaterial;
-  private rainPos!: Float32Array;
+  private rain!: Rain;
   private rainLevel = 0;
   private rainOn = false;
   private rainTimer = 5;
@@ -187,11 +200,36 @@ export class Game {
   private airships: THREE.Object3D[] = [];
   private dinoNecks: THREE.Object3D[] = []; // dinosaur heads (Prehistoric) that bend down
   // The Cyberpunk city: buildings + billboards on facades
-  private adMats: THREE.MeshBasicMaterial[] = []; // materials for the billboards on buildings
-  private buildings: { g: THREE.Group; box: THREE.Mesh; panel: THREE.Mesh; active: boolean }[] = [];
+  private adMats: THREE.MeshBasicMaterial[] = []; // legacy list (kept for the curvature pass); panels own their material
+  private adSets: Record<AdFormat, THREE.CanvasTexture>[] = []; // 10 brands x 3 formats
+  private moonTimer = 12; // seconds until the sky billboard picks another ad
+  private moonFade = 0; // 0 = idle; >0 = fading out, <0 = fading in
+  private moonBrand = 1;
+  private facades: FacadeSet[] = []; // procedural facade textures (Cyberpunk)
+  private skyTraffic?: SkyTraffic;
+  private holoMoon?: THREE.Mesh;
+  private extraCurveMats: THREE.Material[] = []; // materials created by the procedural art that need the curvature
+  private roofPropMat = new THREE.MeshStandardMaterial({ color: 0x0b0f1c, emissive: 0x101a30, emissiveIntensity: 0.6, roughness: 0.8, flatShading: true });
+  private roofLightMat = new THREE.MeshBasicMaterial({ color: 0xff3050, toneMapped: false });
+
+  private buildings: { g: THREE.Group; box: THREE.Mesh; panel: THREE.Mesh; roof: THREE.Group; edges: THREE.Mesh; ring: THREE.Mesh; active: boolean }[] = [];
   private buildAccum = 0;
   private buildSide = -1;
   private buildGeo = new THREE.BoxGeometry(1, 1, 1);
+  // Neon frame for a building: 4 vertical edge bars (unit cube corners) + a roofline ring; scaled with the building.
+  private edgeBarsGeo = (() => {
+    const t = 0.012; // thickness as a fraction of the building size (0.15 units on a 12-unit building)
+    const parts: THREE.BufferGeometry[] = [];
+    for (const sx of [-1, 1]) for (const sz of [-1, 1]) { const b = new THREE.BoxGeometry(t, 1, t); b.translate(sx * (0.5 - t / 2), 0, sz * (0.5 - t / 2)); parts.push(b); }
+    return mergeGeometries(parts)!;
+  })();
+  private roofRingGeo = (() => {
+    const t = 0.012, ty = 0.0025;
+    const parts: THREE.BufferGeometry[] = [];
+    for (const sz of [-1, 1]) { const b = new THREE.BoxGeometry(1, ty, t); b.translate(0, 0.5 - ty / 2, sz * (0.5 - t / 2)); parts.push(b); }
+    for (const sx of [-1, 1]) { const b = new THREE.BoxGeometry(t, ty, 1); b.translate(sx * (0.5 - t / 2), 0.5 - ty / 2, 0); parts.push(b); }
+    return mergeGeometries(parts)!;
+  })();
   private buildMats: THREE.MeshStandardMaterial[] = [];
   private buildLineMats: THREE.LineBasicMaterial[] = [];
   private adCountdown = [7, 9]; // how many fillers until the next billboard block (per side)
@@ -281,6 +319,9 @@ export class Game {
   onScore?: (s: number) => void;
   onGameOver?: (s: number) => void;
   onCore?: (value: number, mult: number) => void; // bonus + multiplier on pickup
+  onLives?: (lives: number, progress: number) => void; // lives count + progress (0..1) towards the next one
+  onLifeGained?: (lives: number) => void;
+  onLifeLost?: (lives: number) => void;
 
   constructor(canvas: HTMLCanvasElement) {
     this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: 'high-performance' });
@@ -314,7 +355,7 @@ export class Game {
     // train (tuck), clearing an obstacle (run-and-jump); the one to play is chosen at take-off.
     this.character = new CharacterController(
       '/models/neon-outlaw.glb',
-      { run: 'RunFast', jump: 'Regular_Jump', jumpTrain: 'Tuck_Jump', jumpObstacle: 'Run_and_Jump', slide: 'slide_light', dead: 'dying_backwards' },
+      { run: 'RunFast', idle: 'Idle', jump: 'Regular_Jump', jumpTrain: 'Tuck_Jump', jumpObstacle: 'Run_and_Jump', slide: 'slide_light', dead: 'dying_backwards' },
       CLIP_WINDOWS,
       PLAYER_H,
       () => {
@@ -369,7 +410,9 @@ export class Game {
 
   /** Injects the world curvature into a material's vertex shader (offset × distance² in view space). */
   private applyCurveShader(mat: THREE.Material) {
+    const extra = (mat as THREE.Material & { userData: { shaderHook?: (sh: THREE.WebGLProgramParametersWithUniforms) => void } }).userData.shaderHook;
     mat.onBeforeCompile = (shader) => {
+      extra?.(shader);
       shader.uniforms.uCurve = this.curveUniform; // shared reference → updated once
       shader.vertexShader =
         'uniform vec2 uCurve;\n' +
@@ -394,7 +437,8 @@ export class Game {
       this.pMat, this.groundMat, this.railLMat, this.railRMat, this.lineMat,
       this.mat.block, this.mat.overhead, this.mat.wall, this.mat.core,
       this.trainBlockMat, this.trainRideMat, this.trainVegMat, this.trainSfMat, this.portalMat,
-      ...this.adMats, ...this.buildMats, ...this.buildLineMats, ...this.sceneryMats, this.terrainMat,
+      ...this.adMats, ...this.buildMats, ...this.buildLineMats, ...this.sceneryMats, this.terrainMat, ...this.extraCurveMats,
+      this.roofPropMat, this.roofLightMat,
     ];
     for (const m of mats) this.applyCurveShader(m);
   }
@@ -581,20 +625,9 @@ export class Game {
     const body = new THREE.Mesh(new THREE.BoxGeometry(0.35, 0.35, 1.3), sil);
     this.pteroGroup.add(this.pteroLWing, this.pteroRWing, body);
 
-    // Rain — falling particles around the player
-    const N = 400;
-    this.rainPos = new Float32Array(N * 3);
-    for (let i = 0; i < N; i++) {
-      this.rainPos[i * 3] = -11 + Math.random() * 22;
-      this.rainPos[i * 3 + 1] = Math.random() * 20;
-      this.rainPos[i * 3 + 2] = -26 + Math.random() * 34;
-    }
-    const rg = new THREE.BufferGeometry();
-    rg.setAttribute('position', new THREE.BufferAttribute(this.rainPos, 3));
-    this.rainMat = new THREE.PointsMaterial({ color: 0xaad4ff, size: 0.14, transparent: true, opacity: 0, depthWrite: false, fog: false });
-    this.rainPoints = new THREE.Points(rg, this.rainMat);
-    this.rainPoints.visible = false;
-    this.scene.add(this.rainPoints);
+    // Rain — streaks around the player + splashes on the road (see rain.ts)
+    this.rain = new Rain(900, Math.random);
+    this.scene.add(this.rain.group);
   }
 
 
@@ -683,7 +716,6 @@ export class Game {
     this.cyberBackdrop = new THREE.Group();
     this.cyberBackdrop.visible = false;
     this.skyGroup.add(this.cyberBackdrop);
-    const boxMats = [0x244a9a, 0x4a2a8a, 0x1a6a9a, 0x3a2a7a].map((c) => new THREE.MeshBasicMaterial({ color: c, fog: false }));
     const edgeMats = [0x6ae6ff, 0xff7ae0, 0x7af0ff].map((c) => new THREE.LineBasicMaterial({ color: c }));
     const edges = new THREE.EdgesGeometry(this.buildGeo);
     const N = 76;
@@ -692,18 +724,31 @@ export class Game {
       const ang = (i / N) * Math.PI * 2;
       const w = 16 + Math.random() * 12;
       const h = 50 + Math.random() * 70;
-      const box = new THREE.Mesh(this.buildGeo, boxMats[i % boxMats.length]);
+      // unique, coarse, low-resolution facade: the skyline is ~230 units away
+      const f = makeFacade(w, h, Math.random, { cellScale: 2.4, px: 0.6, composite: true });
+      f.emissive.dispose();
+      const box = new THREE.Mesh(this.buildGeo, new THREE.MeshBasicMaterial({ map: f.map, color: 0xb8bfe0, fog: false }));
       box.scale.set(w, h, 6);
       box.position.set(Math.sin(ang) * R, h / 2 - 35, -Math.cos(ang) * R); // base below the horizon
       box.rotation.y = -ang; // width tangent to the ring → continuous skyline
       box.add(new THREE.LineSegments(edges, edgeMats[i % edgeMats.length]));
       this.cyberBackdrop.add(box);
     }
+    // Flying traffic over the skyline + a giant holographic ad hanging in the sky (the "holo moon").
+    this.skyTraffic = new SkyTraffic(70, Math.random);
+    this.cyberBackdrop.add(this.skyTraffic.points);
+    if (!this.adSets.length) this.adSets = makeBillboardTextures(Math.random);
+    const moonMat = new THREE.MeshBasicMaterial({ map: this.adSets[this.moonBrand].square, transparent: true, opacity: 0.55, depthWrite: false, fog: false, toneMapped: false, side: THREE.DoubleSide });
+    this.holoMoon = new THREE.Mesh(new THREE.PlaneGeometry(64, 64), moonMat);
+    this.holoMoon.position.set(78, 82, -235);
+    this.holoMoon.lookAt(0, 20, 0);
+    this.cyberBackdrop.add(this.holoMoon);
   }
 
   /** Buildings (boxes) with neon edges + billboards on facades, the Cyberpunk city. */
   private buildBuildings() {
-    this.adMats = [0x00eaff, 0xff36c8, 0xffd23a, 0x7eff9a].map((c) => new THREE.MeshBasicMaterial({ color: c }));
+    if (!this.adSets.length) this.adSets = makeBillboardTextures(Math.random);
+    if (!this.facades.length) this.facades = makeFacadeTextures(6, Math.random);
     const defs = [
       { c: 0x0e1428, e: 0x1e58b0, line: 0x33e6ff },
       { c: 0x1c1230, e: 0x6a1ea0, line: 0xff5ad8 },
@@ -711,20 +756,45 @@ export class Game {
     ];
     this.buildMats = defs.map((m) => new THREE.MeshStandardMaterial({ color: m.c, emissive: m.e, emissiveIntensity: 1.5, roughness: 0.75, metalness: 0.2, flatShading: true }));
     this.buildLineMats = defs.map((m) => new THREE.LineBasicMaterial({ color: m.line }));
-    const edges = new THREE.EdgesGeometry(this.buildGeo);
     const panelGeo = new THREE.PlaneGeometry(1, 1);
+    const antennaGeo = new THREE.CylinderGeometry(0.12, 0.18, 1, 5);
+    const acGeo = new THREE.BoxGeometry(1, 1, 1);
+    const tankGeo = new THREE.CylinderGeometry(1, 1, 1, 8);
+    const lightGeo = new THREE.SphereGeometry(0.22, 6, 4);
     for (let i = 0; i < 40; i++) {
       const k = i % defs.length;
       const g = new THREE.Group();
-      const box = new THREE.Mesh(this.buildGeo, this.buildMats[k]);
-      box.add(new THREE.LineSegments(edges, this.buildLineMats[k])); // neon edges (scale with the box)
+      // per-building material: facade textures (repeat set at placement so the windows keep their size)
+      // per-building material; the facade textures are generated at placement (unique per building)
+      const f0 = makeFacade(10, 40, Math.random);
+      const bm = new THREE.MeshStandardMaterial({ map: f0.map, emissiveMap: f0.emissive, color: 0xd8dcff, emissive: 0xffffff, emissiveIntensity: 0.9, roughness: 0.85, metalness: 0.05 });
+      this.extraCurveMats.push(bm);
+      const box = new THREE.Mesh(this.buildGeo, bm);
       g.add(box);
-      const panel = new THREE.Mesh(panelGeo, this.adMats[i % this.adMats.length]);
+      const neonMat = new THREE.MeshBasicMaterial({ color: 0x00eaff, toneMapped: false });
+      this.extraCurveMats.push(neonMat);
+      const edgesMesh = new THREE.Mesh(this.edgeBarsGeo, neonMat);
+      const ring = new THREE.Mesh(this.roofRingGeo, neonMat);
+      g.add(edgesMesh, ring);
+      void k;
+      const panelMat = new THREE.MeshBasicMaterial({ map: this.adSets[i % this.adSets.length].square, toneMapped: false });
+      this.extraCurveMats.push(panelMat);
+      const panel = new THREE.Mesh(panelGeo, panelMat);
+      panel.userData.flicker = Math.random() * 100;
       panel.visible = false;
       g.add(panel);
+      // rooftop props: antenna with a red light, an AC unit, a water tank (random subset per placement)
+      const roof = new THREE.Group();
+      const antenna = new THREE.Mesh(antennaGeo, this.roofPropMat);
+      antenna.add(new THREE.Mesh(lightGeo, this.roofLightMat));
+      antenna.children[0].position.y = 0.5;
+      const ac = new THREE.Mesh(acGeo, this.roofPropMat);
+      const tank = new THREE.Mesh(tankGeo, this.roofPropMat);
+      roof.add(antenna, ac, tank);
+      g.add(roof);
       g.visible = false;
       this.scene.add(g);
-      this.buildings.push({ g, box, panel, active: false });
+      this.buildings.push({ g, box, panel, roof, edges: edgesMesh, ring, active: false });
     }
   }
 
@@ -733,17 +803,56 @@ export class Game {
   }
 
   /** Positions and activates a building (with/without a full-facade billboard). */
-  private placeBuilding(b: { g: THREE.Group; box: THREE.Mesh; panel: THREE.Mesh; active: boolean }, x: number, z: number, w: number, topH: number, d: number, ad: boolean) {
+  private placeBuilding(b: { g: THREE.Group; box: THREE.Mesh; panel: THREE.Mesh; roof: THREE.Group; edges: THREE.Mesh; ring: THREE.Mesh; active: boolean }, x: number, z: number, w: number, topH: number, d: number, ad: boolean) {
     b.active = true;
     b.g.visible = true;
     b.box.scale.set(w, topH + 25, d); // +25 below the horizon → no sky underneath
     b.box.position.set(0, (topH - 25) / 2, 0);
     b.g.position.set(x, 0, z);
+    // unique facade sized to this building (the box extends 25 units below the horizon)
+    const bm = b.box.material as THREE.MeshStandardMaterial;
+    bm.map?.dispose();
+    bm.emissiveMap?.dispose();
+    const f = makeFacade(w, topH + 25, Math.random);
+    bm.map = f.map;
+    bm.emissiveMap = f.emissive;
+    // neon frame in the building's own colour: vertical edges + roofline ring
+    (b.edges.material as THREE.MeshBasicMaterial).color.set(f.neon);
+    b.edges.scale.set(w, topH + 25, d);
+    b.edges.position.set(0, (topH - 25) / 2, 0);
+    b.ring.scale.copy(b.edges.scale);
+    b.ring.position.copy(b.edges.position);
+    // rooftop props
+    const [antenna, ac, tank] = b.roof.children as THREE.Mesh[];
+    antenna.visible = Math.random() < 0.6;
+    const ah = 3 + Math.random() * 5;
+    antenna.scale.set(1, ah, 1);
+    antenna.position.set((Math.random() - 0.5) * w * 0.6, topH + ah / 2, (Math.random() - 0.5) * d * 0.5);
+    ac.visible = Math.random() < 0.7;
+    ac.scale.set(1.2 + Math.random() * 1.6, 0.9 + Math.random() * 0.8, 1.2 + Math.random() * 1.6);
+    ac.position.set((Math.random() - 0.5) * w * 0.6, topH + ac.scale.y / 2, (Math.random() - 0.5) * d * 0.5);
+    tank.visible = Math.random() < 0.35;
+    const tr = 0.8 + Math.random() * 0.8;
+    tank.scale.set(tr, 1.6 + Math.random(), tr);
+    tank.position.set((Math.random() - 0.5) * w * 0.5, topH + tank.scale.y / 2, (Math.random() - 0.5) * d * 0.5);
     if (ad) {
       b.panel.visible = true;
-      b.panel.material = this.adMats[(Math.random() * this.adMats.length) | 0];
-      b.panel.scale.set(w * 0.92, topH * 0.92, 1);
-      b.panel.position.set(0, topH * 0.5, d / 2 + 0.2);
+      const availW = w * 0.92, availH = topH * 0.92;
+      const avail = availW / availH;
+      let fmt: AdFormat = 'square';
+      let best = Infinity;
+      for (const f of Object.keys(AD_ASPECT) as AdFormat[]) {
+        const dlt = Math.abs(Math.log(avail / AD_ASPECT[f]));
+        if (dlt < best) { best = dlt; fmt = f; }
+      }
+      const aspect = AD_ASPECT[fmt];
+      const pw = avail > aspect ? availH * aspect : availW;
+      const ph = pw / aspect;
+      const pm = b.panel.material as THREE.MeshBasicMaterial;
+      pm.map = this.adSets[(Math.random() * this.adSets.length) | 0][fmt];
+      pm.color.setScalar(1);
+      b.panel.scale.set(pw, ph, 1);
+      b.panel.position.set(0, topH * 0.5, d / 2 + 0.2); // centred on the facade
     } else {
       b.panel.visible = false;
     }
@@ -1050,6 +1159,32 @@ export class Game {
 
   /** Animates the pterodactyl (Prehistoric/Solarpunk) and the temporary rain (Cyberpunk). */
   private updateAmbient(dt: number) {
+    if (this.cyberBackdrop.visible) {
+      this.skyTraffic?.update(dt);
+      if (this.holoMoon) {
+        const mm = this.holoMoon.material as THREE.MeshBasicMaterial;
+        // every 10-15 s pick another of the 10 ads at random, with a short fade out / fade in
+        this.moonTimer -= dt;
+        if (this.moonTimer <= 0 && this.moonFade === 0) this.moonFade = 1;
+        let fade = 1;
+        if (this.moonFade > 0) {
+          this.moonFade -= dt * 2;
+          fade = Math.max(0, this.moonFade);
+          if (this.moonFade <= 0) {
+            let next = this.moonBrand;
+            while (next === this.moonBrand) next = (Math.random() * this.adSets.length) | 0;
+            this.moonBrand = next;
+            mm.map = this.adSets[next].square;
+            this.moonFade = -1;
+            this.moonTimer = 10 + Math.random() * 5;
+          }
+        } else if (this.moonFade < 0) {
+          this.moonFade = Math.min(0, this.moonFade + dt * 2);
+          fade = 1 + this.moonFade;
+        }
+        mm.opacity = (0.45 + 0.1 * Math.sin(this.elapsed * 1.3)) * fade;
+      }
+    }
     // Pterodactyl
     if (this.pteroActive) {
       this.pteroProg += dt / 7; // ~7s crossing
@@ -1113,18 +1248,8 @@ export class Game {
 
     const target = inCyber && this.rainOn ? 1 : 0;
     this.rainLevel = damp(this.rainLevel, target, 1.2, dt);
-    this.rainMat.opacity = this.rainLevel * 0.5;
-    if (this.rainLevel < 0.01) {
-      this.rainPoints.visible = false;
-    } else {
-      this.rainPoints.visible = true;
-      this.rainPoints.position.x = this.camX;
-      for (let i = 1; i < this.rainPos.length; i += 3) {
-        this.rainPos[i] -= dt * 42;
-        if (this.rainPos[i] < 0) this.rainPos[i] += 20;
-      }
-      (this.rainPoints.geometry.attributes.position as THREE.BufferAttribute).needsUpdate = true;
-    }
+    this.rain.update(dt, this.camX, this.rainLevel, Math.random);
+
   }
 
   private buildTrack() {
@@ -1411,6 +1536,14 @@ export class Game {
     this.elapsed = 0;
     this.score = 0;
     this.shownScore = -1;
+    this.lives = 1;
+    this.lifeBase = 0;
+    this.lastLifeProgress = -1;
+    this.respawnT = 0;
+    this.frozen = false;
+    this.invuln = false;
+    this.character?.setOpacity(1);
+    this.emitLives(true);
     this.spawnAccum = 0;
     this.nextGap = 10;
     this.camX = 0;
@@ -1426,7 +1559,7 @@ export class Game {
     this.rainOn = false;
     this.rainLevel = 0;
     this.rainTimer = 5;
-    this.rainPoints.visible = false;
+    this.rain.group.visible = false;
     this.buildAccum = 0;
     this.buildSide = -1;
     this.adCountdown = [7, 9];
@@ -1513,7 +1646,34 @@ export class Game {
     }
     if (this.burstT > 0) this.burstT = Math.max(0, this.burstT - dt);
     this.speed = diff.speed * this.speedMult * (this.burstT > 0 && burst ? burst.mult : 1);
-    const move = this.speed * dt;
+    // Respawn: the character stops and blinks; the world resumes as soon as the player acts, or after RESPAWN_TIME.
+    if (this.respawnT > 0) {
+      this.respawnT = Math.max(0, this.respawnT - dt);
+      if (this.respawnT === 0 && this.frozen) {
+        // No input within the time: the character stays put, another life is lost and a new interval starts.
+        if (this.lives > 1) {
+          this.lives--;
+          this.lifeBase = this.score;
+          this.respawnT = RESPAWN_TIME;
+          this.onLifeLost?.(this.lives);
+          this.emitLives(true);
+        } else {
+          this.frozen = false;
+          this.invuln = false;
+          this.character?.setOpacity(1);
+          this.gameOver();
+          return;
+        }
+      }
+    }
+    if (this.invuln) {
+      const tri = Math.abs(((this.elapsed * 2) % 1) * 2 - 1); // 0..1..0 twice per second
+      this.character?.setOpacity(0.1 + 0.9 * tri);
+      if (this.frozen) this.resumeGrace = 0.4;
+      else this.resumeGrace = Math.max(0, this.resumeGrace - dt);
+    }
+    const move = this.frozen ? 0 : this.speed * dt;
+    this.overlapNow = false;
 
     this.worldDist += move;
     const wd = this.worldDist;
@@ -1539,6 +1699,12 @@ export class Game {
       }
     }
 
+    // Invulnerability ends as soon as the world runs again and the player is clear of the obstacle.
+    if (this.invuln && !this.frozen && this.resumeGrace <= 0 && !this.overlapNow) {
+      this.invuln = false;
+      this.respawnT = 0;
+      this.character?.setOpacity(1);
+    }
     this.updateAmbient(dt); // pterodactyl + rain
 
     // Buildings (Cyberpunk) — stop when the portal opens (the city ends at the portal)
@@ -1552,6 +1718,12 @@ export class Game {
     for (const b of this.buildings) {
       if (!b.active) continue;
       b.g.position.z += move;
+      if (b.panel.visible) {
+        // neon flicker: mostly steady, with short random dips
+        const t = this.elapsed * 9 + (b.panel.userData.flicker as number);
+        const dip = Math.sin(t) * Math.sin(t * 1.7) * Math.sin(t * 0.23) > 0.75 ? 0.45 : 1;
+        (b.panel.material as THREE.MeshBasicMaterial).color.setScalar(dip * (0.92 + 0.08 * Math.sin(t * 0.5)));
+      }
       if (b.g.position.z > DESPAWN_Z + 8) {
         b.active = false;
         b.g.visible = false;
@@ -1578,6 +1750,12 @@ export class Game {
 
     // Score (distance)
     this.score += move * 0.6;
+    if (this.lives < MAX_LIVES && this.score >= this.lifeBase + this.lives * LIFE_STEP) {
+      this.lives++;
+      this.lifeBase = this.score;
+      this.onLifeGained?.(this.lives);
+      this.emitLives(true);
+    } else this.emitLives(false);
     const s = Math.floor(this.score);
     if (s !== this.shownScore) {
       this.shownScore = s;
@@ -1621,7 +1799,7 @@ export class Game {
     // Animated character — position + state (run/jump/slide)
     if (this.character) {
       this.character.group.position.set(this.px, this.py, PLAYER_Z);
-      let st: CharState = 'run';
+      let st: CharState = this.frozen ? 'idle' : 'run';
       if (this.slideT > 0) st = 'slide';
       else if (this.py > this.supportY + 0.05) st = this.airborneKind ?? (this.airborneKind = this.pickJumpKind());
       else this.airborneKind = undefined;
@@ -1676,7 +1854,7 @@ export class Game {
         this.py = o.roofY; // teal + jumping → the trampoline launches the player onto the roof
         this.vy = 0;
       } else {
-        this.gameOver(); // red from the ground, or teal hit without jumping → crash
+        this.crash(o); // red from the ground, or teal hit without jumping → crash
       }
     }
 
@@ -1773,7 +1951,56 @@ export class Game {
     if (o.type === 'block') cleared = this.py >= BLOCK_H; // jumped over
     else if (o.type === 'overhead') cleared = this.slideT > 0; // slid underneath
     else if (o.type === 'wall') cleared = false; // change lane
-    if (!cleared) this.gameOver();
+    if (!cleared) this.crash(o);
+  }
+
+  /** A lethal collision: ignored while invulnerable, costs a life while there are spare ones, otherwise game over. */
+  private crash(o: Ob) {
+    if (this.state !== 'playing') return;
+    if (this.invuln) {
+      this.overlapNow = true; // still touching the obstacle that cost the life → not punished again
+      return;
+    }
+    if (this.lives > 1) {
+      this.lives--;
+      this.lifeBase = this.score;
+      this.respawnT = RESPAWN_TIME;
+      this.frozen = true;
+      this.invuln = true;
+      this.slideT = 0;
+      // Step the world back so the character stands just in front of what it hit (visible, not inside it).
+      const front = o.type === 'trainRide' || o.type === 'trainBlock' ? o.mesh.position.z + o.len / 2 : o.mesh.position.z + SPEC[o.type as SimpleType].d / 2;
+      const want = PLAYER_Z - PLAYER_D / 2 - 0.5; // the obstacle's front face ends up half a unit ahead of the player
+      if (front > want) this.shiftWorld(want - front);
+      this.onLifeLost?.(this.lives);
+      this.emitLives(true);
+      return;
+    }
+    this.gameOver();
+  }
+
+  /** Moves every scrolling world object by dz (negative = away from the player). Used once per crash. */
+  private shiftWorld(dz: number) {
+    for (const type of Object.keys(this.pools) as SimpleType[]) for (const o of this.pools[type]) if (o.active) o.mesh.position.z += dz;
+    for (const o of this.trains) {
+      if (!o.active) continue;
+      o.mesh.position.z += dz;
+      if (o.ramp) o.ramp.position.z += dz;
+      if (o.decor) o.decor.position.z += dz;
+    }
+    for (const b of this.buildings) if (b.active) b.g.position.z += dz;
+    for (const sc of this.scenery) if (sc.active) sc.g.position.z += dz;
+    for (const g of this.grounds) g.position.z += dz;
+    if (this.portal.active) this.portal.mesh.position.z += dz;
+  }
+
+  private emitLives(force: boolean) {
+    const need = this.lives * LIFE_STEP;
+    const progress = this.lives >= MAX_LIVES ? 1 : clamp((this.score - this.lifeBase) / need, 0, 1);
+    if (force || Math.abs(progress - this.lastLifeProgress) >= 0.01) {
+      this.lastLifeProgress = progress;
+      this.onLives?.(this.lives, progress);
+    }
   }
 
   private gameOver() {
@@ -1819,6 +2046,7 @@ export class Game {
 
   private moveLane(d: number) {
     this.targetLane = clamp(this.targetLane + d, 0, 2);
+    this.frozen = false;
   }
   private jump() {
     // jumps from the ground/roof OR within the grace window (coyote) after leaving the edge
@@ -1826,9 +2054,11 @@ export class Game {
       this.vy = JUMP_V;
       this.coyoteT = 0;
     }
+    this.frozen = false;
   }
   private slide() {
     this.slideT = SLIDE_TIME;
+    this.frozen = false;
     if (this.py > this.supportY + 0.01) this.vy = -JUMP_V; // drops fast if airborne
   }
 
