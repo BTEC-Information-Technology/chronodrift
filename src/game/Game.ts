@@ -32,8 +32,9 @@ import type { ObType, SimpleType } from './types';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { CharacterController, type CharState } from './character';
 import CLIP_WINDOWS from './neon-outlaw.clips.json';
-import { makeFacadeTextures, makeFacade, makeBillboardTextures, SkyTraffic, AD_ASPECT, type AdFormat, type FacadeSet } from './cyber';
+import { makeFacadeTextures, makeFacade, makeBillboardTextures, SkyTraffic, SkyVehicles, AD_ASPECT, type AdFormat, type FacadeSet } from './cyber';
 import { Rain } from './rain';
+import { Portal } from './portal';
 import type { Settings } from './settings';
 
 const CAM_LOOK_Z = -22; // fixed look-ahead distance the camera points at
@@ -50,7 +51,8 @@ const GUARD_SPAN = 36; // lateral width of the guard buildings (fills the billbo
 const SCENERY_SPAWN_Z = -150; // per-era side scenery (non-Cyberpunk) appears from afar
 const EXCURSION_MIN = 30; // minimum excursion duration (s)
 const EXCURSION_MAX = 90; // maximum excursion duration (s)
-const MORPH_DUR = 0.5; // short palette morph when passing through the portal (no shaking)
+const MORPH_DUR = 0.5; // short palette morph when passing through the portal
+const SHAKE_DUR = 1.0; // the crossing shakes the whole world (camera) for this long
 const PORTAL_Y = 2.2; // height of the portal ring's centre
 
 // Trains (Increment B)
@@ -155,6 +157,7 @@ export class Game {
   private frozen = false; // world stopped until the player acts (jump / lane change) or the respawn time runs out
   private invuln = false; // from the crash until the world runs again AND nothing overlaps the player any more
   private resumeGrace = 0; // short grace after the world resumes, so a lane change started from the stop can complete
+  private shakeT = 0; // portal crossing: camera shake countdown
   private overlapNow = false;
   private deathFloor = 0; // where the body comes to rest after death (ground or the roof it was on)
   private deathBack = 0; // current backward offset of the visual character while dying
@@ -207,6 +210,7 @@ export class Game {
   private moonBrand = 1;
   private facades: FacadeSet[] = []; // procedural facade textures (Cyberpunk)
   private skyTraffic?: SkyTraffic;
+  private skyVehicles?: SkyVehicles;
   private holoMoon?: THREE.Mesh;
   private extraCurveMats: THREE.Material[] = []; // materials created by the procedural art that need the curvature
   private roofPropMat = new THREE.MeshStandardMaterial({ color: 0x0b0f1c, emissive: 0x101a30, emissiveIntensity: 0.6, roughness: 0.8, flatShading: true });
@@ -273,8 +277,7 @@ export class Game {
   private pendingEra = -1; // era the portal is open towards (-1 = none)
   private testEras = [true, true, true, true, true]; // TEST: allowed eras (see settings.testEras)
   private sfBudget = 0; // how many sci-fi intrusions (decorated trains) may still appear in the current excursion
-  private portal!: { mesh: THREE.Mesh; active: boolean; crossed: boolean };
-  private portalMat!: THREE.MeshStandardMaterial;
+  private portal!: { mesh: THREE.Object3D; fx: Portal; active: boolean; crossed: boolean };
   // scratch colors (avoids per-frame allocations)
   private cA = new THREE.Color();
   private cB = new THREE.Color();
@@ -384,11 +387,10 @@ export class Game {
     this.trainSfMat = new THREE.MeshStandardMaterial({ color: 0x141820, emissive: 0x3a6a7a, emissiveIntensity: 0.6, roughness: 0.5, metalness: 0.4, flatShading: true });
 
     // Era-change portal — a ring spanning all lanes, telegraphed from the front.
-    this.portalMat = new THREE.MeshStandardMaterial({ color: 0x000000, emissive: 0x00eaff, emissiveIntensity: 1.5, roughness: 0.4, metalness: 0.3 });
-    const portalMesh = new THREE.Mesh(new THREE.TorusGeometry(4.2, 0.28, 12, 36), this.portalMat);
-    portalMesh.visible = false;
-    this.scene.add(portalMesh);
-    this.portal = { mesh: portalMesh, active: false, crossed: false };
+    const fx = new Portal(4.2, 220, Math.random);
+    this.scene.add(fx.group);
+    this.extraCurveMats.push(...fx.materials);
+    this.portal = { mesh: fx.group, fx, active: false, crossed: false };
 
     this.buildTrack();
     this.buildBuildings();
@@ -436,7 +438,7 @@ export class Game {
     const mats: THREE.Material[] = [
       this.pMat, this.groundMat, this.railLMat, this.railRMat, this.lineMat,
       this.mat.block, this.mat.overhead, this.mat.wall, this.mat.core,
-      this.trainBlockMat, this.trainRideMat, this.trainVegMat, this.trainSfMat, this.portalMat,
+      this.trainBlockMat, this.trainRideMat, this.trainVegMat, this.trainSfMat,
       ...this.adMats, ...this.buildMats, ...this.buildLineMats, ...this.sceneryMats, this.terrainMat, ...this.extraCurveMats,
       this.roofPropMat, this.roofLightMat,
     ];
@@ -523,9 +525,8 @@ export class Game {
     this.pendingEra = target;
     this.portal.active = true;
     this.portal.crossed = false;
-    this.portal.mesh.visible = true;
     this.portal.mesh.position.set(0, PORTAL_Y, SPAWN_Z);
-    this.portalMat.emissive.set(ERAS[target].railL); // tint towards the destination colour
+    this.portal.fx.open(ERAS[target]); // tinted with the destination era
   }
 
   /** Sky dome with a gradient (zenith→horizon) + star field (opacity per era). */
@@ -735,8 +736,10 @@ export class Game {
       this.cyberBackdrop.add(box);
     }
     // Flying traffic over the skyline + a giant holographic ad hanging in the sky (the "holo moon").
-    this.skyTraffic = new SkyTraffic(70, Math.random);
+    this.skyTraffic = new SkyTraffic(40, Math.random);
     this.cyberBackdrop.add(this.skyTraffic.points);
+    this.skyVehicles = new SkyVehicles(14, Math.random);
+    this.cyberBackdrop.add(this.skyVehicles.group);
     if (!this.adSets.length) this.adSets = makeBillboardTextures(Math.random);
     const moonMat = new THREE.MeshBasicMaterial({ map: this.adSets[this.moonBrand].square, transparent: true, opacity: 0.55, depthWrite: false, fog: false, toneMapped: false, side: THREE.DoubleSide });
     this.holoMoon = new THREE.Mesh(new THREE.PlaneGeometry(64, 64), moonMat);
@@ -1161,6 +1164,7 @@ export class Game {
   private updateAmbient(dt: number) {
     if (this.cyberBackdrop.visible) {
       this.skyTraffic?.update(dt);
+      this.skyVehicles?.update(dt, this.elapsed);
       if (this.holoMoon) {
         const mm = this.holoMoon.material as THREE.MeshBasicMaterial;
         // every 10-15 s pick another of the 10 ads at random, with a short fade out / fade in
@@ -1542,6 +1546,7 @@ export class Game {
     this.respawnT = 0;
     this.frozen = false;
     this.invuln = false;
+    this.shakeT = 0;
     this.character?.setOpacity(1);
     this.emitLives(true);
     this.spawnAccum = 0;
@@ -1588,7 +1593,7 @@ export class Game {
     this.sfBudget = startEra === 1 || startEra === 2 ? 2 + randInt(this.rng, 3) : 0;
     this.pendingEra = -1;
     this.portal.active = false;
-    this.portal.mesh.visible = false;
+    this.portal.fx.close();
     this.applyEra(ERAS[startEra], ERAS[startEra], 0, 0);
     this.onEra?.(ERAS[startEra].name);
     this.character?.setState('run');
@@ -1672,6 +1677,8 @@ export class Game {
       if (this.frozen) this.resumeGrace = 0.4;
       else this.resumeGrace = Math.max(0, this.resumeGrace - dt);
     }
+    // Portal shock: the world shakes for a moment after the crossing.
+    if (this.shakeT > 0) this.shakeT = Math.max(0, this.shakeT - dt);
     const move = this.frozen ? 0 : this.speed * dt;
     this.overlapNow = false;
 
@@ -1895,15 +1902,16 @@ export class Game {
     // Portal — movement + triggering the morph when it passes the player
     if (this.portal.active) {
       this.portal.mesh.position.z += move;
-      this.portal.mesh.rotation.z += dt * 0.6;
+      this.portal.fx.update(dt, Math.random);
       if (!this.portal.crossed && this.portal.mesh.position.z >= PLAYER_Z) {
         this.portal.crossed = true;
+        this.shakeT = SHAKE_DUR;
         this.trans = { from: this.era, to: this.pendingEra, t: 0 };
         this.onEra?.(ERAS[this.pendingEra].name);
       }
       if (this.portal.mesh.position.z > DESPAWN_Z + 3) {
         this.portal.active = false;
-        this.portal.mesh.visible = false;
+        this.portal.fx.close();
       }
     }
 
@@ -1933,6 +1941,13 @@ export class Game {
     this.camLift = damp(this.camLift, this.camTargetLift, 8, dt);
     this.camera.position.set(this.camX, this.camBaseY + this.camLift, this.camBaseZ);
     this.camera.lookAt(0, this.camLookY + this.camLift, CAM_LOOK_Z);
+    if (this.shakeT > 0) {
+      // world shake on the portal crossing: random jolts that die out over SHAKE_DUR
+      const k = (this.shakeT / SHAKE_DUR) * 0.35;
+      this.camera.position.x += (Math.random() - 0.5) * k;
+      this.camera.position.y += (Math.random() - 0.5) * k;
+      this.camera.rotation.z += (Math.random() - 0.5) * k * 0.25;
+    }
   }
 
   private hit(o: Ob) {

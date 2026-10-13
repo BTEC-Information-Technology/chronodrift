@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 
 /**
  * Procedural art for the Neo-Cyberpunk ("home") era: canvas-generated facades with lit windows,
@@ -332,5 +333,62 @@ export class SkyTraffic {
       this.pos[i * 3] = x;
     }
     (this.points.geometry.attributes.position as THREE.BufferAttribute).needsUpdate = true;
+  }
+}
+
+/** Flying vehicles over the skyline: one merged low-poly body per vehicle (vertex colours), with headlights,
+ * taillights and an underglow strip; they cross the horizon at different heights, depths and speeds. */
+export class SkyVehicles {
+  readonly group = new THREE.Group();
+  private items: { m: THREE.Mesh; speed: number; baseY: number; phase: number }[] = [];
+  constructor(count: number, rng: () => number) {
+    const geo = SkyVehicles.buildGeometry();
+    const mat = new THREE.MeshBasicMaterial({ vertexColors: true, fog: false, toneMapped: false });
+    for (let i = 0; i < count; i++) {
+      const m = new THREE.Mesh(geo, mat);
+      const dir = rng() < 0.5 ? -1 : 1;
+      const s = 2.2 + rng() * 2.2;
+      m.scale.setScalar(s);
+      m.rotation.y = dir > 0 ? 0 : Math.PI; // nose along the travel direction
+      const baseY = 16 + rng() * 58;
+      m.position.set(-230 + rng() * 460, baseY, -130 - rng() * 100);
+      this.group.add(m);
+      this.items.push({ m, speed: dir * (5 + rng() * 14), baseY, phase: rng() * 6.28 });
+    }
+  }
+  private static buildGeometry(): THREE.BufferGeometry {
+    const parts: THREE.BufferGeometry[] = [];
+    const box = (w: number, h: number, d: number, x: number, y: number, z: number, color: number) => {
+      const g = new THREE.BoxGeometry(w, h, d);
+      g.translate(x, y, z);
+      const c = new THREE.Color(color);
+      const n = g.attributes.position.count;
+      const col = new Float32Array(n * 3);
+      for (let i = 0; i < n; i++) {
+        col[i * 3] = c.r;
+        col[i * 3 + 1] = c.g;
+        col[i * 3 + 2] = c.b;
+      }
+      g.setAttribute('color', new THREE.BufferAttribute(col, 3));
+      parts.push(g);
+    };
+    box(1.0, 0.22, 0.42, 0, 0, 0, 0x0b0d1a); // hull (nose at +x)
+    box(0.42, 0.16, 0.3, -0.08, 0.17, 0, 0x121a3a); // cabin
+    box(0.08, 0.06, 0.12, 0.5, 0.02, 0.13, 0xffffff); // headlights
+    box(0.08, 0.06, 0.12, 0.5, 0.02, -0.13, 0xffffff);
+    box(0.06, 0.07, 0.34, -0.5, 0.02, 0, 0xff2a6a); // taillight bar
+    box(0.8, 0.03, 0.2, 0, -0.12, 0, 0x00eaff); // underglow strip
+    const merged = mergeGeometries(parts)!;
+    for (const p of parts) p.dispose();
+    return merged;
+  }
+  update(dt: number, t: number) {
+    for (const it of this.items) {
+      let x = it.m.position.x + it.speed * dt;
+      if (x > 240) x = -240;
+      else if (x < -240) x = 240;
+      it.m.position.x = x;
+      it.m.position.y = it.baseY + Math.sin(t * 0.7 + it.phase) * 0.8;
+    }
   }
 }

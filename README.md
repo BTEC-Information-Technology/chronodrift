@@ -38,7 +38,7 @@ Custom domains come from `wrangler.jsonc` (`chronodrift.fun-zone.app` and
 ## Conventions
 
 - **`BUILD` in `src/main.ts`** = the number shown on the start screen. Increment it on every
-  change so you can confirm on the phone that the new code actually loaded. (Current: **build 85**.)
+  change so you can confirm on the phone that the new code actually loaded. (Current: **build 91**.)
 - Collisions and game logic live in **logical space** (lanes `LANE_X`, `px/py`); models and
   curvature are **visual only**, so assets can be swapped in without touching gameplay.
 - Commit messages are written in **English**.
@@ -92,6 +92,9 @@ Custom domains come from `wrangler.jsonc` (`chronodrift.fun-zone.app` and
   10-15 s. Billboards come in square / portrait / landscape and keep their aspect; they flicker like
   neon. Rain is long streaks (reduces visibility, on purpose). Obstacles, trains and the road are
   unchanged (a hologram/maglev attempt and a wet-asphalt effect were reverted).
+- **Sky vehicles:** 14 merged low-poly flyers (headlights, taillight bar, underglow) crossing the skyline.
+- **Portal as a time distortion** (`portal.ts`): spinning spiral vortex + particles spiralling in + flare, no
+  rings, tinted with the destination palette; the crossing shakes the camera for 1 s (`SHAKE_DUR`).
 - **Obstacles/core** in stylised low-poly (RoundedBox + flatShading, crystal core).
 - **Settings panel** (gear icon on the start screen): live-adjustable camera (height / distance /
   tilt / FOV, preview while idle) + difficulty (presets + speed/density sliders = multipliers),
