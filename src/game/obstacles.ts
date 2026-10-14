@@ -3,36 +3,45 @@ import { RoundedBoxGeometry } from 'three/examples/jsm/geometries/RoundedBoxGeom
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 
 /**
- * Neo-Cyberpunk obstacle looks, built from solid low-poly parts (no transparency, no stripes):
- *  - block (jump over): a cargo pod with a lit top frame and a chevron on the face
- *  - overhead (slide under): a floating sign gantry with a lit underside and a down-chevron
- *  - wall (change lane): a barrier emitter — two posts, a solid plate, a lit band
- *  - train hull: a maglev capsule — dark body, window strip, roof edge lines, underglow
- * Every piece is one of three materials: body (dark), accent (the type's emissive colour, driven
- * by the era palette in the game) and light (white). Dimensions match the game's collision specs.
+ * Neo-Cyberpunk obstacle looks in the maglev's language: smooth rounded bodies with city reflections,
+ * light accent panels, neon as emissive geometry (the type's colour, era-tinted by the game), white lights.
+ *  - block (jump over): a hover cargo pod on two lit pads, two up-chevrons on the face
+ *  - overhead (slide under): a floating gantry with thruster pods, a sign plate with a down-chevron, lit underside
+ *  - wall (change lane): a barrier emitter — two posts with lit edges, a solid plate with glass, panel and red bars
+ * Dimensions match the game's collision specs. Materials are passed in, so other eras can reuse the geometry.
  */
 export interface ObstacleMats {
-  body: THREE.Material;
-  accent: THREE.Material;
-  light: THREE.Material;
+  body: THREE.Material; // rounded hull
+  dark: THREE.Material; // pads, pods, plates
+  accent: THREE.Material; // light panel
+  glass: THREE.Material; // dark glass
+  neon: THREE.Material; // the type's colour (emissive, HDR → bloom)
+  white: THREE.Material; // small white lights
 }
 
-type Part = { geo: THREE.BufferGeometry; mat: 'body' | 'accent' | 'light' };
+type Part<K extends string> = { geo: THREE.BufferGeometry; mat: K };
 
-function box(w: number, h: number, d: number, x: number, y: number, z: number, mat: Part['mat'], rz = 0, ry = 0): Part {
-  const g = new THREE.BoxGeometry(w, h, d);
-  if (rz) g.rotateZ(rz);
-  if (ry) g.rotateY(ry);
-  g.translate(x, y, z);
-  return { geo: g, mat };
+const rbox = (w: number, h: number, d: number, r = 0.06, seg = 2) => new RoundedBoxGeometry(w, h, d, seg, r);
+
+function place<K extends string>(parts: Part<K>[], geo: THREE.BufferGeometry, mat: K, x: number, y: number, z: number, rz = 0): void {
+  if (rz) geo.rotateZ(rz);
+  geo.translate(x, y, z);
+  parts.push({ geo, mat });
 }
 
-function assemble(parts: Part[], mats: ObstacleMats): THREE.Group {
+/** Continuous chevron: two bars whose inner ends meet at the apex (slightly overlapping) + a round knuckle. */
+function chevron<K extends string>(parts: Part<K>[], mat: K, x: number, apexY: number, z: number, L: number, a: number, up: boolean, t = 0.07): void {
+  const dy = up ? -1 : 1;
+  for (const sx of [-1, 1]) place(parts, rbox(L + t, t, 0.03, t * 0.45, 1), mat, x + sx * (L / 2) * Math.cos(a), apexY + dy * (L / 2) * Math.sin(a), z, sx * dy * a);
+  place(parts, new THREE.CylinderGeometry(t * 0.5, t * 0.5, 0.03, 10).rotateX(Math.PI / 2), mat, x, apexY, z);
+}
+
+/** Merges the parts per material into one mesh each (position + normal only; smooth normals survive). */
+function assemble<K extends string>(parts: Part<K>[], mats: Record<K, THREE.Material>, keys: readonly K[]): THREE.Group {
   const group = new THREE.Group();
-  for (const key of ['body', 'accent', 'light'] as const) {
+  for (const key of keys) {
     const raw = parts.filter((p) => p.mat === key).map((p) => p.geo);
     if (!raw.length) continue;
-    // normalise before merging: non-indexed, position + normal only (RoundedBox and Box differ in attributes)
     const geos = raw.map((g) => {
       const n = g.index ? g.toNonIndexed() : g;
       for (const name of Object.keys(n.attributes)) if (name !== 'position' && name !== 'normal') n.deleteAttribute(name);
@@ -48,53 +57,61 @@ function assemble(parts: Part[], mats: ObstacleMats): THREE.Group {
   return group;
 }
 
-/** Cargo pod, centred at the origin (the game places it at y = h/2). w x h x d = 1.7 x 1.1 x 1.2. */
+const OB_KEYS = ['body', 'dark', 'accent', 'glass', 'neon', 'white'] as const;
+type ObKey = (typeof OB_KEYS)[number];
+
+/** Hover cargo pod, centred at the origin (the game places it at y = h/2). 1.7 x 1.1 x 1.2. */
 export function buildBlock(mats: ObstacleMats, w = 1.7, h = 1.1, d = 1.2): THREE.Group {
-  const parts: Part[] = [];
-  const body = new RoundedBoxGeometry(w * 0.94, h * 0.9, d * 0.92, 2, 0.08);
-  parts.push({ geo: body, mat: 'body' });
-  const t = 0.07;
-  const top = h / 2 - 0.02;
-  // lit top frame
-  parts.push(box(w, t, t, 0, top, d / 2 - t / 2, 'accent'), box(w, t, t, 0, top, -d / 2 + t / 2, 'accent'));
-  parts.push(box(t, t, d, w / 2 - t / 2, top, 0, 'accent'), box(t, t, d, -w / 2 + t / 2, top, 0, 'accent'));
-  // chevron on the face towards the player (+z)
-  const zf = d / 2 + 0.01;
-  parts.push(box(0.5, 0.08, 0.04, -0.2, -0.05, zf, 'accent', 0.6), box(0.5, 0.08, 0.04, 0.2, -0.05, zf, 'accent', -0.6));
-  parts.push(box(0.5, 0.08, 0.04, -0.2, 0.25, zf, 'accent', 0.6), box(0.5, 0.08, 0.04, 0.2, 0.25, zf, 'accent', -0.6));
-  // corner lights
-  for (const sx of [-1, 1]) parts.push(box(0.12, 0.12, 0.06, sx * (w / 2 - 0.14), -h / 2 + 0.16, zf, 'light'));
-  return assemble(parts, mats);
+  const parts: Part<ObKey>[] = [];
+  place(parts, rbox(w * 0.94, h * 0.72, d * 0.9, 0.16, 3), 'body', 0, 0.08, 0);
+  for (const s of [-1, 1]) place(parts, rbox(0.02, h * 0.26, d * 0.62, 0.008, 1), 'accent', s * (w * 0.47 + 0.004), 0.12, 0);
+  const zf = d * 0.45 + 0.012; // face towards the player (+z)
+  place(parts, rbox(w * 0.74, h * 0.5, 0.02, 0.01, 1), 'dark', 0, 0.1, zf);
+  for (const apexY of [0.08, 0.32]) chevron(parts, 'neon', 0, apexY, zf + 0.02, 0.4, 0.62, true);
+  for (const sz of [-1, 1]) place(parts, rbox(w * 0.86, 0.045, 0.045, 0.02, 1), 'neon', 0, 0.08 + h * 0.36 + 0.01, sz * d * 0.44);
+  for (const sx of [-1, 1]) place(parts, rbox(0.14, 0.06, 0.04, 0.02, 1), 'white', sx * (w * 0.38), -0.22, zf + 0.02);
+  for (const sz of [-1, 1]) {
+    place(parts, rbox(w * 0.5, 0.14, 0.34, 0.05, 2), 'dark', 0, -h * 0.5 + 0.09, sz * d * 0.26);
+    place(parts, new THREE.BoxGeometry(w * 0.42, 0.015, 0.26), 'neon', 0, -h * 0.5 + 0.015, sz * d * 0.26);
+  }
+  return assemble(parts, mats, OB_KEYS);
 }
 
 /** Floating sign gantry, centred at the origin (the game places it at OVERHEAD_Y + h/2). 2.0 x 0.7 x 1.0. */
 export function buildOverhead(mats: ObstacleMats, w = 2.0, h = 0.7, d = 1.0): THREE.Group {
-  const parts: Part[] = [];
-  parts.push({ geo: new RoundedBoxGeometry(w * 0.96, h * 0.8, d * 0.9, 2, 0.06), mat: 'body' });
-  // lit underside strip (what the player sees when sliding under)
-  parts.push(box(w * 0.9, 0.06, d * 0.5, 0, -h / 2 + 0.03, 0, 'accent'));
-  // down-chevron on the face towards the player
-  const zf = d / 2 + 0.01;
-  parts.push(box(0.55, 0.08, 0.04, -0.22, 0.04, zf, 'accent', -0.55), box(0.55, 0.08, 0.04, 0.22, 0.04, zf, 'accent', 0.55));
-  // end caps lit
-  for (const sx of [-1, 1]) parts.push(box(0.08, h * 0.7, d * 0.7, sx * (w / 2 - 0.04), 0, 0, 'light'));
-  return assemble(parts, mats);
+  const parts: Part<ObKey>[] = [];
+  place(parts, rbox(w * 0.8, h * 0.56, d * 0.7, 0.12, 3), 'body', 0, 0.04, 0);
+  for (const sx of [-1, 1]) {
+    place(parts, rbox(0.34, h * 0.86, d * 0.86, 0.1, 3), 'dark', sx * (w / 2 - 0.17), 0, 0);
+    place(parts, new THREE.BoxGeometry(0.26, 0.015, d * 0.7), 'neon', sx * (w / 2 - 0.17), -h * 0.43 - 0.005, 0);
+  }
+  const zf = d * 0.35 + 0.012;
+  place(parts, rbox(w * 0.66, h * 0.4, 0.02, 0.01, 1), 'accent', 0, 0.08, zf);
+  chevron(parts, 'neon', 0, -0.02, zf + 0.02, 0.34, 0.6, false);
+  place(parts, rbox(w * 0.72, 0.05, 0.12, 0.02, 1), 'neon', 0, -h * 0.28 - 0.02, 0); // lit underside (seen when sliding)
+  for (const sx of [-1, 1]) place(parts, rbox(0.16, 0.06, 0.04, 0.02, 1), 'white', sx * (w / 2 - 0.17), -0.08, d * 0.43 + 0.02);
+  return assemble(parts, mats, OB_KEYS);
 }
 
 /** Barrier emitter, centred at the origin (the game places it at y = h/2). 1.8 x 2.6 x 1.0. */
 export function buildWall(mats: ObstacleMats, w = 1.8, h = 2.6, d = 1.0): THREE.Group {
-  const parts: Part[] = [];
-  const post = 0.26;
+  const parts: Part<ObKey>[] = [];
+  const post = 0.32;
   for (const sx of [-1, 1]) {
-    parts.push({ geo: (() => { const g = new RoundedBoxGeometry(post, h, d * 0.8, 2, 0.05); g.translate(sx * (w / 2 - post / 2), 0, 0); return g; })(), mat: 'body' });
-    parts.push(box(0.06, h * 0.9, 0.06, sx * (w / 2 - post / 2), 0, d * 0.4 + 0.02, 'accent')); // lit post edge
-    parts.push(box(post * 0.8, 0.1, d * 0.5, sx * (w / 2 - post / 2), h / 2 + 0.05, 0, 'light')); // cap light
+    const x = sx * (w / 2 - post / 2);
+    place(parts, rbox(post, h * 0.98, d * 0.72, 0.09, 3), 'body', x, 0, 0);
+    place(parts, rbox(0.05, h * 0.84, 0.05, 0.02, 1), 'neon', x, 0, d * 0.36 + 0.02);
+    place(parts, rbox(post * 0.7, 0.08, d * 0.5, 0.03, 1), 'white', x, h * 0.49 + 0.05, 0);
+    place(parts, new THREE.BoxGeometry(post * 0.8, 0.015, d * 0.6), 'neon', x, -h * 0.49 - 0.005, 0);
   }
-  // solid plate between the posts with a lit band at eye height
-  parts.push(box(w - post * 2 + 0.02, h * 0.92, d * 0.45, 0, 0, 0, 'body'));
-  parts.push(box(w - post * 2, 0.22, d * 0.45 + 0.04, 0, h * 0.12, 0, 'accent'));
-  parts.push(box(w - post * 2, 0.06, d * 0.45 + 0.04, 0, -h * 0.3, 0, 'accent'));
-  return assemble(parts, mats);
+  const pw = w - post * 2 + 0.04;
+  place(parts, rbox(pw, h * 0.92, d * 0.4, 0.06, 2), 'dark', 0, 0, 0);
+  const zf = d * 0.2 + 0.012;
+  place(parts, rbox(pw * 0.9, h * 0.34, 0.02, 0.01, 1), 'glass', 0, h * 0.24, zf);
+  place(parts, rbox(pw * 0.9, h * 0.22, 0.02, 0.01, 1), 'accent', 0, -h * 0.3, zf);
+  place(parts, rbox(pw * 0.94, 0.16, 0.05, 0.03, 1), 'neon', 0, h * 0.03, zf + 0.02);
+  place(parts, rbox(pw * 0.94, 0.06, 0.04, 0.02, 1), 'neon', 0, -h * 0.12, zf + 0.02);
+  return assemble(parts, mats, OB_KEYS);
 }
 
 /**
@@ -213,7 +230,7 @@ function rail(sw: Sweep, j: number, ring0: number, ring1: number, out: number, r
 const ringAt = (sw: Sweep, z: number) => { let best = 0; for (let i = 0; i < sw.zs.length; i++) if (Math.abs(sw.zs[i] - z) < Math.abs(sw.zs[best] - z)) best = i; return best; };
 const jAt = (prof: [number, number][], x: number, y: number) => { let best = 0, bd = 1e9; for (let j = 0; j < prof.length; j++) { const d = (prof[j][0] - x) ** 2 + (prof[j][1] - y) ** 2; if (d < bd) { bd = d; best = j; } } return best; };
 
-type TPart = { geo: THREE.BufferGeometry; mat: TrainMatKey };
+type TPart = Part<TrainMatKey>;
 
 /** One car (locomotive with `nose`, or a wagon with two flat ends), centred at the origin, base at y = 0. */
 function buildCar(parts: TPart[], len: number, nose: boolean, w: number, h: number, noseLen: number, zOff: number) {
@@ -305,22 +322,5 @@ export function buildTrain(mats: TrainMats, len: number, w = 1.9, h = 2.8, noseL
     buildCar(parts, car.len, car.nose, w, h, noseLen, zc);
     zFront -= car.len + 0.5;
   }
-  const group = new THREE.Group();
-  const keys = ['body', 'dark', 'pad', 'accent', 'glass', 'shield', 'neon', 'red', 'white'] as const;
-  for (const key of keys) {
-    const raw = parts.filter((p) => p.mat === key).map((p) => p.geo);
-    if (!raw.length) continue;
-    const geos = raw.map((g) => {
-      const n = g.index ? g.toNonIndexed() : g;
-      for (const name of Object.keys(n.attributes)) if (name !== 'position' && name !== 'normal') n.deleteAttribute(name);
-      return n;
-    });
-    const merged = mergeGeometries(geos);
-    if (!merged) throw new Error('train: merge failed for ' + key);
-    for (const g of raw) g.dispose();
-    const mesh = new THREE.Mesh(merged, mats[key]);
-    mesh.name = key;
-    group.add(mesh);
-  }
-  return group;
+  return assemble(parts, mats, ['body', 'dark', 'pad', 'accent', 'glass', 'shield', 'neon', 'red', 'white'] as const);
 }

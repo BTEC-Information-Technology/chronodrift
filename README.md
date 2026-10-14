@@ -38,7 +38,7 @@ Custom domains come from `wrangler.jsonc` (`chronodrift.fun-zone.app` and
 ## Conventions
 
 - **`BUILD` in `src/main.ts`** = the number shown on the start screen. Increment it on every
-  change so you can confirm on the phone that the new code actually loaded. (Current: **build 94**.)
+  change so you can confirm on the phone that the new code actually loaded. (Current: **build 108**.)
 - Collisions and game logic live in **logical space** (lanes `LANE_X`, `px/py`); models and
   curvature are **visual only**, so assets can be swapped in without touching gameplay.
 - Commit messages are written in **English**.
@@ -54,6 +54,7 @@ Custom domains come from `wrangler.jsonc` (`chronodrift.fun-zone.app` and
   the physics airtime; era tint for the neon).
 - `neonTrim.ts` — the neon lines as geometry: tubes sampled on the suit surface at bind pose and
   attached to the bones (legs, arms, chest V, back lines, belt, visor, helmet crest).
+- `tokens.ts` — pickup token looks per era (`buildToken`, `animateToken`).
 - `obstacles.ts` — procedural obstacle looks (block / overhead / wall) and `buildTrain`: the maglev
   locomotive + wagons (one rounded profile swept along the length, wedge nose, windows, neon rails,
   red end bars, headlight, pads). Every colour/light comes from a `TrainMats` set, so other eras can
@@ -103,8 +104,20 @@ Custom domains come from `wrangler.jsonc` (`chronodrift.fun-zone.app` and
   dented hard surfaces, no emissive channel and (after simplification) zero-length normals that turn
   into NaN under bloom. Keep hard-surface props procedural.
 - **Post-processing:** `EffectComposer` + `UnrealBloomPass` (threshold 0.9, so only HDR neon glows) +
-  `OutputPass`; key light + cyan rim light. Very bright reds come out orange through tone mapping, so
-  the red lights stay at ~1.15 and get no bloom.
+  `OutputPass` on a 4x MSAA render target (the canvas antialiasing does not apply off-screen); key light +
+  cyan rim light. Very bright reds come out orange through tone mapping, so the red lights stay at ~1.15
+  and get no bloom. Tiny bright points (stars) bloom into squares, so stars stay under the threshold
+  except the biggest ones.
+- **Obstacles (build 95):** jump block, slide-under gantry and lane-change barrier rebuilt in the train's
+  language (`obstacles.ts`): smooth bodies, light panels, continuous neon chevrons, white lights, pads.
+- **Neo-Cyberpunk ground (build 96-104):** asphalt/plaza texture shared by the road and a city floor the
+  buildings stand on; the road rails are a thin core plus a soft additive halo; the buildings' neon frames
+  are painted into the facade texture (geometry bars flickered at distance).
+- **Stars:** round shader points (`makeStarMaterial`), sizes vary, brightness follows size (0.88..1.0), no
+  twinkle of their own; full sphere (visible below the horizon through the Unknown Future void).
+- **Tokens (build 107, `tokens.ts`):** one look per era — hourglass coin (Neo), glass hourglass (Prehistoric),
+  crystal shard (Ancient), clock gear (Solarpunk), gyroscope orb (Unknown Future); neon in the era's core
+  colour, coin-style spin plus orbiting rings.
 - **Sky vehicles:** 14 merged low-poly flyers (headlights, taillight bar, underglow) crossing the skyline.
 - **Portal as a time distortion** (`portal.ts`): spinning spiral vortex + particles spiralling in + flare, no
   rings, tinted with the destination palette; the crossing shakes the camera for 1 s (`SHAKE_DUR`).
@@ -124,6 +137,7 @@ Custom domains come from `wrangler.jsonc` (`chronodrift.fun-zone.app` and
 
 ## Active TEST values (restore to normal before release)
 
+- `LIFE_STEP = 10000` (production) in `constants.ts`.
 - `TRAIN_UNLOCK = 120` + increased train probability (`Game.ts`, `generateContent`) → dense
   trains from the start. "Production" value: ~600 + natural probability.
 - The era roll is already at its real value (1000 pts), but during testing the portal shows up
