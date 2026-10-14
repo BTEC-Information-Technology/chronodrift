@@ -1,9 +1,9 @@
 import './style.css';
-import { Game } from './game/Game';
+import { Game, setBuildTag } from './game/Game';
 import { loadSettings, saveSettings, DIFFICULTY_PRESETS } from './game/settings';
 
 // Bump the number on every change → on the phone you can confirm the new code has loaded.
-const BUILD = 108;
+const BUILD = 114;
 const verEl = document.getElementById('ver');
 if (verEl) verEl.textContent = `build ${BUILD}`;
 
@@ -64,6 +64,13 @@ game.onLives = (lives, progress) => {
   lifeBarFill.style.width = `${Math.round(progress * 100)}%`;
 };
 game.onLifeGained = () => showPickup('+1 LIFE', 2000);
+const perfEl = document.getElementById('perf') as HTMLElement;
+const perfOn = new URLSearchParams(location.search).has('perf'); // overlay only with ?perf=1; the log is always kept
+if (!perfOn) perfEl.style.display = 'none';
+game.onPerf = (t) => { if (perfOn) perfEl.textContent = t; };
+setBuildTag(String(BUILD));
+const copyBtn = document.getElementById('copyLog') as HTMLButtonElement;
+copyBtn.addEventListener('click', async () => { const txt = game.getPerfLog(); try { await navigator.clipboard.writeText(txt); copyBtn.textContent = 'Copied ✓'; } catch { const ta = document.createElement('textarea'); ta.value = txt; document.body.appendChild(ta); ta.select(); document.execCommand('copy'); ta.remove(); copyBtn.textContent = 'Copied ✓'; } setTimeout(() => { copyBtn.textContent = 'Copy perf log'; }, 1500); });
 game.onLifeLost = (lives) => (lives === 1 ? showPickup('LAST LIFE', 2500) : showPickup('-1 LIFE', 2000));
 
 game.onEra = (name) => {
@@ -84,6 +91,7 @@ game.onGameOver = (s) => {
   sessionEl.textContent = `Session: ${fmt(sessionBanked)}`;
   msg.textContent = `Game Over\nScore: ${s}${record ? '\n🏆 New best!' : ''}`;
   startBtn.textContent = 'AGAIN';
+  if (perfOn) copyBtn.style.display = '';
   overlay.classList.add('show');
 };
 

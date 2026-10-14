@@ -43,9 +43,9 @@ function assemble<K extends string>(parts: Part<K>[], mats: Record<K, THREE.Mate
     const raw = parts.filter((p) => p.mat === key).map((p) => p.geo);
     if (!raw.length) continue;
     const geos = raw.map((g) => {
-      const n = g.index ? g.toNonIndexed() : g;
-      for (const name of Object.keys(n.attributes)) if (name !== 'position' && name !== 'normal') n.deleteAttribute(name);
-      return n;
+      for (const name of Object.keys(g.attributes)) if (name !== 'position' && name !== 'normal') g.deleteAttribute(name);
+      if (!g.index) { const n = g.attributes.position.count; const idx = new Uint32Array(n); for (let i = 0; i < n; i++) idx[i] = i; g.setIndex(new THREE.BufferAttribute(idx, 1)); }
+      return g;
     });
     const merged = mergeGeometries(geos);
     if (!merged) throw new Error('obstacles: merge failed for ' + key);
