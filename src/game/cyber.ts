@@ -157,8 +157,32 @@ export function makeFacade(
       ctx.fillRect(0, y, W, Math.max(2, Math.round(rh * 0.16)));
     }
   }
+  // neon frame painted into the texture: vertical edges of every face + the roofline, with a soft glow.
+  // (Texture filtering keeps it smooth at any distance; thin geometry bars flickered.)
+  if (!opts.composite) {
+    const bw = Math.max(3, Math.round(cw * 0.3)), bh = Math.max(3, Math.round(rh * 0.22));
+    const rgb = neon.length === 7 ? [parseInt(neon.slice(1, 3), 16), parseInt(neon.slice(3, 5), 16), parseInt(neon.slice(5, 7), 16)] : [0, 234, 255];
+    const glow = (ctx: CanvasRenderingContext2D, x0: number, y0: number, x1: number, y1: number, gw: number, vertical: boolean) => {
+      const gr = vertical ? ctx.createLinearGradient(x0, 0, x1, 0) : ctx.createLinearGradient(0, y0, 0, y1);
+      gr.addColorStop(0, `rgba(${rgb[0]},${rgb[1]},${rgb[2]},0)`);
+      gr.addColorStop(0.5, `rgba(${rgb[0]},${rgb[1]},${rgb[2]},0.45)`);
+      gr.addColorStop(1, `rgba(${rgb[0]},${rgb[1]},${rgb[2]},0)`);
+      ctx.fillStyle = gr;
+      ctx.fillRect(vertical ? x0 : 0, vertical ? 0 : y0, vertical ? x1 - x0 : W, vertical ? H : y1 - y0);
+      void gw;
+    };
+    for (const ctx of [m, e]) {
+      glow(ctx, -bw * 2, 0, bw * 4, 0, bw, true);
+      glow(ctx, W - bw * 4, 0, W + bw * 2, 0, bw, true);
+      glow(ctx, 0, -bh * 2, 0, bh * 4, bh, false);
+      ctx.fillStyle = neon;
+      ctx.fillRect(0, 0, bw, H);
+      ctx.fillRect(W - bw, 0, bw, H);
+      ctx.fillRect(0, 0, W, bh);
+    }
+  }
   const mt = tex(cm, false), et = tex(ce, false);
-  mt.anisotropy = et.anisotropy = 2;
+  mt.anisotropy = et.anisotropy = 4;
   return { map: mt, emissive: et, neon };
 }
 
@@ -428,4 +452,77 @@ export function makeCityEnvMap(renderer: THREE.WebGLRenderer): THREE.Texture {
   pmrem.dispose();
   tex.dispose();
   return env;
+}
+
+/**
+ * Star points: round discs with a bright core and a soft radial halo; sizes vary and the brightness follows the
+ * size (small ones stay under the bloom threshold, the biggest get a round bloom halo). No twinkle of their own.
+ * uOpacity follows the era palette (0 = day, 1 = night).
+ */
+export function makeStarMaterial(opacity: number, pixelRatio: number): THREE.ShaderMaterial {
+  return new THREE.ShaderMaterial({
+    uniforms: { uOpacity: { value: opacity }, uPixelRatio: { value: pixelRatio } },
+    vertexShader: `
+      attribute float aSize;
+      attribute float aBright;
+      uniform float uPixelRatio;
+      varying float vBright;
+      void main() {
+        vec4 mv = modelViewMatrix * vec4(position, 1.0);
+        vBright = aBright;
+        gl_PointSize = aSize * uPixelRatio;
+        gl_Position = projectionMatrix * mv;
+      }`,
+    fragmentShader: `
+      uniform float uOpacity;
+      varying float vBright;
+      void main() {
+        float d = length(gl_PointCoord - 0.5) * 2.0;
+        if (d > 1.0) discard;
+        float core = smoothstep(0.5, 0.0, d);           // bright round centre
+        float halo = (1.0 - d) * (1.0 - d) * 0.5;       // soft radial glow drawn in the sprite (no bloom needed)
+        float b = uOpacity * vBright * min(1.0, core + halo); // 0.88 (small, no bloom) .. 1.0 (big, round bloom halo)
+        gl_FragColor = vec4(vec3(b), min(1.0, core + halo));
+      }`,
+    transparent: true,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending,
+    fog: false,
+  });
+}
+
+/**
+ * Asphalt / plaza surface tile (shared by the road and the city floor): fine grain plus a few barely visible
+ * large slabs. Light values (0.72..1.0) so the material's colour stays the tint and the era palette keeps working.
+ */
+export function makeAsphaltTexture(): THREE.CanvasTexture {
+  const S = 512;
+  const c = document.createElement('canvas');
+  c.width = c.height = S;
+  const g = c.getContext('2d')!;
+  let seed = 23;
+  const rnd = () => { seed = (seed * 16807) % 2147483647; return seed / 2147483647; };
+  g.fillStyle = '#e4e4ea';
+  g.fillRect(0, 0, S, S);
+  // slabs: 2 x 2 per tile, each a slightly different tone, with a soft dark seam
+  const P = S / 2;
+  for (let i = 0; i < 2; i++) for (let j = 0; j < 2; j++) {
+    const v = 196 + rnd() * 50;
+    g.fillStyle = `rgb(${v | 0},${v | 0},${(v + 8) | 0})`;
+    g.fillRect(i * P, j * P, P, P);
+  }
+  g.strokeStyle = 'rgba(40,40,60,0.9)';
+  g.lineWidth = 5;
+  for (let i = 0; i <= 2; i++) { g.beginPath(); g.moveTo(i * P, 0); g.lineTo(i * P, S); g.stroke(); g.beginPath(); g.moveTo(0, i * P); g.lineTo(S, i * P); g.stroke(); }
+  // grain
+  g.globalAlpha = 0.22;
+  for (let k = 0; k < 12000; k++) { const v = (160 + rnd() * 95) | 0; g.fillStyle = `rgb(${v},${v},${v + 4})`; g.fillRect(rnd() * S, rnd() * S, 1 + rnd() * 2, 1 + rnd() * 2); }
+  g.globalAlpha = 0.08;
+  for (let k = 0; k < 60; k++) { g.fillStyle = rnd() < 0.5 ? '#000' : '#fff'; g.beginPath(); g.ellipse(rnd() * S, rnd() * S, 10 + rnd() * 40, 6 + rnd() * 20, rnd() * 3, 0, Math.PI * 2); g.fill(); }
+  g.globalAlpha = 1;
+  const t = new THREE.CanvasTexture(c);
+  t.colorSpace = THREE.SRGBColorSpace;
+  t.wrapS = t.wrapT = THREE.RepeatWrapping;
+  t.anisotropy = 8;
+  return t;
 }

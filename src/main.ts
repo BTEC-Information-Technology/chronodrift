@@ -3,7 +3,7 @@ import { Game } from './game/Game';
 import { loadSettings, saveSettings, DIFFICULTY_PRESETS } from './game/settings';
 
 // Bump the number on every change → on the phone you can confirm the new code has loaded.
-const BUILD = 94;
+const BUILD = 108;
 const verEl = document.getElementById('ver');
 if (verEl) verEl.textContent = `build ${BUILD}`;
 
@@ -45,13 +45,14 @@ game.onCore = (value, mult) => {
   coinsEl.textContent = `◈ ${fmt(coins)}`;
   showPickup(mult > 1 ? `+${value}  ×${mult}` : `+${value}`);
 };
-function showPickup(text: string) {
+function showPickup(text: string, ms = 650) {
   pickupEl.textContent = text;
   pickupEl.classList.remove('show');
   void pickupEl.offsetWidth; // restarts the animation
+  pickupEl.style.animationDuration = `${ms}ms`;
   pickupEl.classList.add('show');
   clearTimeout(pickupTimer);
-  pickupTimer = window.setTimeout(() => pickupEl.classList.remove('show'), 650);
+  pickupTimer = window.setTimeout(() => pickupEl.classList.remove('show'), ms);
 }
 
 const eraEl = document.getElementById('era') as HTMLElement;
@@ -62,8 +63,8 @@ game.onLives = (lives, progress) => {
   livesIcons.textContent = '♥'.repeat(lives);
   lifeBarFill.style.width = `${Math.round(progress * 100)}%`;
 };
-game.onLifeGained = () => showPickup('+1 LIFE');
-game.onLifeLost = (lives) => showPickup(lives === 1 ? 'LAST LIFE' : '-1 LIFE');
+game.onLifeGained = () => showPickup('+1 LIFE', 2000);
+game.onLifeLost = (lives) => (lives === 1 ? showPickup('LAST LIFE', 2500) : showPickup('-1 LIFE', 2000));
 
 game.onEra = (name) => {
   eraEl.textContent = name;

@@ -40,7 +40,8 @@ import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer
 import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
 import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
-import { makeCityEnvMap } from './cyber';
+import { makeCityEnvMap, makeStarMaterial, makeAsphaltTexture } from './cyber';
+import { buildToken, animateToken, TOKEN_BY_ERA, type TokenMats } from './tokens';
 import type { Settings } from './settings';
 
 const CAM_LOOK_Z = -22; // fixed look-ahead distance the camera points at
@@ -102,6 +103,7 @@ interface Ob {
   ramp?: THREE.Mesh; // ramp nose (climbable only) — marked by ORIENTATION, not just colour
   decor?: THREE.Group; // sci-fi intrusion decor (Prehistoric/Ancient) — vegetation/debris on the train
   look?: THREE.Group; // Neo-Cyberpunk look (procedural, obstacles.ts); the plain box stays the collision proxy
+  looks?: Map<number, THREE.Group>; // tokens: one look per era (tokens.ts), built on first use
 }
 
 /** Unit triangular wedge: a ramp rising from the ground (tip towards the player) up to the roof.
@@ -147,9 +149,9 @@ export class Game {
   // Trains (separate pool — variable-length geometry)
   private trains: Ob[] = [];
   private hiddenMat!: THREE.MeshBasicMaterial;
-  private lookBody!: THREE.MeshStandardMaterial;
-  private lookLight!: THREE.MeshBasicMaterial;
-  private trainLook!: { ride: TrainMats; block: TrainMats }; // Neo-Cyberpunk train materials per type (neon colour differs)
+  private trainLook!: { ride: TrainMats; block: TrainMats };
+  private lookBase!: Omit<TrainMats, 'neon'>; // shared smooth materials (hull, panels, glass, lights)
+  private tokenMats!: TokenMats; // pickup tokens: dark metal, glass, neon in the era's core colour // Neo-Cyberpunk train materials per type (neon colour differs)
   private composer!: EffectComposer; // render + bloom (the neon glow) + output
   private lookAccent!: { block: THREE.MeshStandardMaterial; overhead: THREE.MeshStandardMaterial; wall: THREE.MeshStandardMaterial; ride: THREE.MeshStandardMaterial; blockT: THREE.MeshStandardMaterial };
   private trainGeo = new RoundedBoxGeometry(1, 1, 1, 2, 0.06);
@@ -187,10 +189,12 @@ export class Game {
   private groundMat!: THREE.MeshStandardMaterial;
   private railLMat!: THREE.MeshStandardMaterial;
   private railRMat!: THREE.MeshStandardMaterial;
+  private railGlowL!: THREE.MeshBasicMaterial; // soft additive halo on the road beside each rail (follows the rail colour)
+  private railGlowR!: THREE.MeshBasicMaterial;
   private lineMat!: THREE.MeshStandardMaterial;
   private fog!: THREE.Fog;
   private skyUniforms!: { uTop: { value: THREE.Color }; uHorizon: { value: THREE.Color } };
-  private starMat!: THREE.PointsMaterial;
+  private starMat!: THREE.ShaderMaterial; // round stars with a bright core and a real per-star twinkle (see makeStarMaterial)
   private skyGroup!: THREE.Group; // sky + stars (turns with the curve)
   private planetGroup!: THREE.Group; // planet fragments (Unknown Future only)
   private planetMat!: THREE.MeshStandardMaterial;
@@ -281,6 +285,9 @@ export class Game {
   // Wide side ground (per era) the scenery stands on — otherwise buildings look like they float.
   private terrainMat!: THREE.MeshStandardMaterial;
   private terrains: THREE.Mesh[] = [];
+  private floorMat!: THREE.MeshStandardMaterial; // Neo-Cyberpunk plaza floor beside the road
+  private cityEnv!: THREE.Texture; // PMREM neon-city reflections (hulls, road, facades)
+  private floors: THREE.Mesh[] = [];
 
   // Eras & portal transition
   private era = 0; // current era (0 = Neo-Cyberpunk, "home")
@@ -352,7 +359,8 @@ export class Game {
     this.camera.lookAt(0, this.camLookY, CAM_LOOK_Z);
 
     // Post: bloom makes the emissive neon (HDR colours > 1) glow; the rest of the scene stays under the threshold.
-    this.composer = new EffectComposer(this.renderer);
+    this.composer = new EffectComposer(this.renderer, new THREE.WebGLRenderTarget(1, 1, { type: THREE.HalfFloatType, samples: 4 }));
+    this.cityEnv = makeCityEnvMap(this.renderer);
     this.composer.addPass(new RenderPass(this.scene, this.camera));
     this.composer.addPass(new UnrealBloomPass(new THREE.Vector2(1, 1), 0.45, 0.3, 0.9));
     this.composer.addPass(new OutputPass());
@@ -404,8 +412,6 @@ export class Game {
     };
     // Neo-Cyberpunk looks: dark bodies with lit accents in the type's colour (the accents follow the era palette)
     this.hiddenMat = new THREE.MeshBasicMaterial({ visible: false });
-    this.lookBody = new THREE.MeshStandardMaterial({ color: 0x10131f, emissive: 0x05060c, emissiveIntensity: 0.5, roughness: 0.55, metalness: 0.35, flatShading: true });
-    this.lookLight = new THREE.MeshBasicMaterial({ color: 0xeaf6ff, toneMapped: false });
     this.lookAccent = {
       block: this.emissiveMat(SPEC.block.color, 1.6, true),
       overhead: this.emissiveMat(SPEC.overhead.color, 1.6, true),
@@ -413,9 +419,9 @@ export class Game {
       ride: this.emissiveMat(TRAIN_RIDE_COLOR, 1.5, true),
       blockT: this.emissiveMat(TRAIN_BLOCK_COLOR, 1.4, true),
     };
-    this.extraCurveMats.push(this.lookBody, this.lookLight, ...Object.values(this.lookAccent));
+    this.extraCurveMats.push(...Object.values(this.lookAccent));
     // Maglev train materials: smooth-shaded hull with city reflections; neon rails in the type's colour; HDR lights for the bloom.
-    const env = makeCityEnvMap(this.renderer);
+    const env = this.cityEnv;
     const trainBase = {
       body: new THREE.MeshStandardMaterial({ color: 0x1b1f33, roughness: 0.42, metalness: 0.25, envMap: env, envMapIntensity: 1.0 }),
       dark: new THREE.MeshStandardMaterial({ color: 0x0a0b14, roughness: 0.6, metalness: 0.3 }),
@@ -427,8 +433,15 @@ export class Game {
       white: new THREE.MeshBasicMaterial({ color: new THREE.Color(1.6, 1.6, 1.7), toneMapped: false }),
     };
     const neonOf = (c: number) => new THREE.MeshBasicMaterial({ color: new THREE.Color(c).multiplyScalar(1.5), toneMapped: false });
+    this.lookBase = trainBase;
     this.trainLook = { ride: { ...trainBase, neon: neonOf(TRAIN_RIDE_COLOR) }, block: { ...trainBase, neon: neonOf(TRAIN_BLOCK_COLOR) } };
     this.extraCurveMats.push(...Object.values(trainBase), this.trainLook.ride.neon, this.trainLook.block.neon);
+    this.tokenMats = {
+      dark: new THREE.MeshStandardMaterial({ color: 0x0f1220, roughness: 0.45, metalness: 0.5, envMap: env, envMapIntensity: 0.8 }),
+      glass: new THREE.MeshStandardMaterial({ color: 0x9fdcff, roughness: 0.1, metalness: 0.3, envMap: env, envMapIntensity: 1.4, transparent: true, opacity: 0.45, depthWrite: false }),
+      neon: new THREE.MeshBasicMaterial({ color: new THREE.Color(SPEC.core.color).multiplyScalar(1.6), toneMapped: false }),
+    };
+    this.extraCurveMats.push(this.tokenMats.dark, this.tokenMats.glass, this.tokenMats.neon);
     this.trainBlockMat = this.emissiveMat(TRAIN_BLOCK_COLOR, 0.4, true);
     this.trainRideMat = this.emissiveMat(TRAIN_RIDE_COLOR, 0.5, true);
     // Lush vegetation (Prehistoric) and damaged metal debris (Ancient) on the train.
@@ -488,7 +501,7 @@ export class Game {
       this.pMat, this.groundMat, this.railLMat, this.railRMat, this.lineMat,
       this.mat.block, this.mat.overhead, this.mat.wall, this.mat.core,
       this.trainBlockMat, this.trainRideMat, this.trainVegMat, this.trainSfMat,
-      ...this.adMats, ...this.buildMats, ...this.buildLineMats, ...this.sceneryMats, this.terrainMat, ...this.extraCurveMats,
+      ...this.adMats, ...this.buildMats, ...this.buildLineMats, ...this.sceneryMats, this.terrainMat, this.floorMat, ...this.extraCurveMats,
       this.roofPropMat, this.roofLightMat,
     ];
     for (const m of mats) this.applyCurveShader(m);
@@ -510,6 +523,8 @@ export class Game {
     set(this.groundMat.emissive, from.groundEmissive, to.groundEmissive, flash * 0.5);
     set(this.railLMat.emissive, from.railL, to.railL, flash * 0.7);
     set(this.railRMat.emissive, from.railR, to.railR, flash * 0.7);
+    this.railGlowL.color.copy(this.railLMat.emissive);
+    this.railGlowR.color.copy(this.railRMat.emissive);
     set(this.lineMat.emissive, from.line, to.line, flash * 0.4);
     set(this.pMat.emissive, from.player, to.player, flash * 0.3);
     this.character?.setTint(this.pMat.emissive);
@@ -520,10 +535,11 @@ export class Game {
     set(this.lookAccent.overhead.emissive, from.overhead, to.overhead, flash * 0.3);
     set(this.lookAccent.wall.emissive, from.wall, to.wall, flash * 0.3);
     set(this.mat.core.emissive, from.core, to.core, flash * 0.3);
+    (this.tokenMats.neon as THREE.MeshBasicMaterial).color.copy(this.mat.core.emissive).multiplyScalar(1.6);
     // Sky + stars
     set(this.skyUniforms.uTop.value, from.skyTop, to.skyTop, flash * 0.2);
     set(this.skyUniforms.uHorizon.value, from.skyHorizon, to.skyHorizon, flash * 0.4);
-    this.starMat.opacity = lerp(from.starOpacity, to.starOpacity, mix);
+    this.starMat.uniforms.uOpacity.value = lerp(from.starOpacity, to.starOpacity, mix);
     // Semi-transparent road (void below) + planet fragments — Unknown Future only
     this.groundMat.opacity = lerp(from.groundOpacity, to.groundOpacity, mix);
     this.groundMat.transparent = this.groundMat.opacity < 0.99;
@@ -608,7 +624,7 @@ export class Game {
     const pos = new Float32Array(N * 3);
     for (let i = 0; i < N; i++) {
       const theta = Math.random() * Math.PI * 2;
-      const phi = Math.acos(2 * Math.random() - 1);
+      const phi = Math.acos(2 * Math.random() - 1); // full sphere: below the horizon they show through the void (Unknown Future); the city floor hides them in Neo-Cyberpunk
       const r = 270;
       pos[i * 3] = r * Math.sin(phi) * Math.cos(theta);
       pos[i * 3 + 1] = r * Math.cos(phi);
@@ -616,16 +632,12 @@ export class Game {
     }
     const starGeo = new THREE.BufferGeometry();
     starGeo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
-    this.starMat = new THREE.PointsMaterial({
-      color: 0xffffff,
-      size: 2.2,
-      sizeAttenuation: true,
-      transparent: true,
-      opacity: ERAS[0].starOpacity,
-      depthWrite: false,
-      blending: THREE.AdditiveBlending,
-      fog: false,
-    });
+    // sizes vary; brightness follows the size: small stars stay under the bloom threshold (0.88), the biggest reach 1.0 (a round bloom halo)
+    const size = new Float32Array(N), bright = new Float32Array(N);
+    for (let i = 0; i < N; i++) { const t = Math.random() * Math.random(); size[i] = 6 + 12 * t; bright[i] = 0.88 + 0.12 * t; }
+    starGeo.setAttribute('aSize', new THREE.BufferAttribute(size, 1));
+    starGeo.setAttribute('aBright', new THREE.BufferAttribute(bright, 1));
+    this.starMat = makeStarMaterial(ERAS[0].starOpacity, this.renderer.getPixelRatio());
     const stars = new THREE.Points(starGeo, this.starMat);
     stars.renderOrder = -1;
     this.skyGroup.add(stars);
@@ -822,7 +834,7 @@ export class Game {
       // per-building material: facade textures (repeat set at placement so the windows keep their size)
       // per-building material; the facade textures are generated at placement (unique per building)
       const f0 = makeFacade(10, 40, Math.random);
-      const bm = new THREE.MeshStandardMaterial({ map: f0.map, emissiveMap: f0.emissive, color: 0xd8dcff, emissive: 0xffffff, emissiveIntensity: 0.9, roughness: 0.85, metalness: 0.05 });
+      const bm = new THREE.MeshStandardMaterial({ map: f0.map, emissiveMap: f0.emissive, color: 0xd8dcff, emissive: 0xffffff, emissiveIntensity: 0.9, roughness: 0.7, metalness: 0.2, envMap: this.cityEnv, envMapIntensity: 0.35 });
       this.extraCurveMats.push(bm);
       const box = new THREE.Mesh(this.buildGeo, bm);
       g.add(box);
@@ -830,6 +842,7 @@ export class Game {
       this.extraCurveMats.push(neonMat);
       const edgesMesh = new THREE.Mesh(this.edgeBarsGeo, neonMat);
       const ring = new THREE.Mesh(this.roofRingGeo, neonMat);
+      edgesMesh.visible = ring.visible = false; // the neon frame is painted into the facade texture (smooth, no flicker)
       g.add(edgesMesh, ring);
       void k;
       const panelMat = new THREE.MeshBasicMaterial({ map: this.adSets[i % this.adSets.length].square, toneMapped: false });
@@ -872,7 +885,7 @@ export class Game {
     bm.map = f.map;
     bm.emissiveMap = f.emissive;
     // neon frame in the building's own colour: vertical edges + roofline ring
-    (b.edges.material as THREE.MeshBasicMaterial).color.set(f.neon);
+    (b.edges.material as THREE.MeshBasicMaterial).color.set(f.neon).multiplyScalar(1.6); // HDR → bloom
     b.edges.scale.set(w, topH + 25, d);
     b.edges.position.set(0, (topH - 25) / 2, 0);
     b.ring.scale.copy(b.edges.scale);
@@ -1286,6 +1299,7 @@ export class Game {
     const showTerrain = this.era === 1 || this.era === 2 || this.era === 3;
     if (showTerrain) this.terrainMat.color.setHex(this.era === 1 ? 0x18301a : this.era === 2 ? 0x3a3122 : 0x163a1e);
     for (const t of this.terrains) t.visible = showTerrain;
+    for (const f of this.floors) f.visible = this.era === 0 && !showTerrain;
     if (this.megaGroup.visible) {
       // the dinosaurs bend down now and then to eat
       for (let i = 0; i < this.dinoNecks.length; i++) {
@@ -1310,15 +1324,31 @@ export class Game {
 
   private buildTrack() {
     const groundGeo = new THREE.BoxGeometry(TRACK_HALF_W * 2, 0.5, SEGMENT_LEN);
-    this.groundMat = new THREE.MeshStandardMaterial({ color: 0x0b0820, roughness: 0.9, emissive: 0x0a0526, emissiveIntensity: 0.4, transparent: true });
-    const railGeo = new THREE.BoxGeometry(0.16, 0.5, SEGMENT_LEN);
-    this.railLMat = this.emissiveMat(0x00eaff, 1.2);
-    this.railRMat = this.emissiveMat(0xff36c8, 1.2);
+    const asphalt = makeAsphaltTexture();
+    asphalt.repeat.set(2, SEGMENT_LEN / 3.6); // 3.6 m tiles across the track width
+    this.groundMat = new THREE.MeshStandardMaterial({ color: 0x0b0820, map: asphalt, roughness: 0.8, metalness: 0.12, envMap: this.cityEnv, envMapIntensity: 0.3, emissive: 0x0a0526, emissiveIntensity: 0.4, transparent: true });
+    // rails: a thin bright core + a wide soft additive halo lying on the road (diffuse edges instead of a hard band)
+    const railGeo = new THREE.BoxGeometry(0.1, 0.5, SEGMENT_LEN);
+    this.railLMat = this.emissiveMat(0x00eaff, 0.95);
+    this.railRMat = this.emissiveMat(0xff36c8, 1.5);
+    const glowTex = (() => { const c = document.createElement('canvas'); c.width = 64; c.height = 1; const g = c.getContext('2d')!; const gr = g.createLinearGradient(0, 0, 64, 0); gr.addColorStop(0, 'rgba(255,255,255,0)'); gr.addColorStop(0.5, 'rgba(255,255,255,1)'); gr.addColorStop(1, 'rgba(255,255,255,0)'); g.fillStyle = gr; g.fillRect(0, 0, 64, 1); const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; return t; })();
+    const glowMat = (c: number) => new THREE.MeshBasicMaterial({ map: glowTex, color: c, transparent: true, opacity: 0.35, blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false });
+    this.railGlowL = glowMat(0x00eaff);
+    this.railGlowR = glowMat(0xff36c8);
+    this.extraCurveMats.push(this.railGlowL, this.railGlowR);
+    const glowGeo = new THREE.PlaneGeometry(0.6, SEGMENT_LEN);
+    glowGeo.rotateX(-Math.PI / 2);
     const lineGeo = new THREE.BoxGeometry(0.06, 0.02, SEGMENT_LEN);
     this.lineMat = this.emissiveMat(0x3344aa, 0.8);
     // Wide side ground (the scenery stands on it); hidden by default, enabled per era in update.
     const terrainGeo = new THREE.BoxGeometry(140, 0.5, SEGMENT_LEN);
     this.terrainMat = new THREE.MeshStandardMaterial({ color: 0x18301a, roughness: 1, metalness: 0, flatShading: true });
+    // Neo-Cyberpunk: a dark plaza floor (panel grid + faint seams) the buildings stand on; the road stays on top
+    const floorTex = makeAsphaltTexture();
+    floorTex.repeat.set(140 / 5.5, SEGMENT_LEN / 5.5); // 5.5 m slabs → 4 per segment, seams line up between segments
+    this.floorMat = new THREE.MeshStandardMaterial({ color: 0x2c3050, map: floorTex, roughness: 0.75, metalness: 0.15, envMap: this.cityEnv, envMapIntensity: 0.35 });
+    const floorGeo = new THREE.PlaneGeometry(140, SEGMENT_LEN);
+    floorGeo.rotateX(-Math.PI / 2);
 
     for (let i = 0; i < SEGMENT_COUNT; i++) {
       const g = new THREE.Group();
@@ -1327,6 +1357,10 @@ export class Game {
       terrain.visible = false;
       g.add(terrain);
       this.terrains.push(terrain);
+      const floor = new THREE.Mesh(floorGeo, this.floorMat);
+      floor.position.y = -0.04;
+      g.add(floor);
+      this.floors.push(floor);
       const ground = new THREE.Mesh(groundGeo, this.groundMat);
       ground.position.y = -0.25;
       g.add(ground);
@@ -1336,6 +1370,12 @@ export class Game {
       const rr = new THREE.Mesh(railGeo, this.railRMat);
       rr.position.set(TRACK_HALF_W, 0.25, 0);
       g.add(rr);
+      const gl = new THREE.Mesh(glowGeo, this.railGlowL);
+      gl.position.set(-TRACK_HALF_W, 0.515, 0);
+      g.add(gl);
+      const gr = new THREE.Mesh(glowGeo, this.railGlowR);
+      gr.position.set(TRACK_HALF_W, 0.515, 0);
+      g.add(gr);
       for (const x of [-1.1, 1.1]) {
         const line = new THREE.Mesh(lineGeo, this.lineMat);
         line.position.set(x, 0.02, 0);
@@ -1353,7 +1393,8 @@ export class Game {
       const mesh = new THREE.Mesh(this.geo[type], this.mat[type]);
       ob = { mesh, type, lane, active: false, len: 0, trampoline: false, roofY: 0 };
       if (type !== 'core') {
-        const lm: ObstacleMats = { body: this.lookBody, accent: this.lookAccent[type], light: this.lookLight };
+        const b = this.lookBase;
+        const lm: ObstacleMats = { body: b.body, dark: b.dark, accent: b.accent, glass: b.glass, neon: this.lookAccent[type], white: b.white };
         ob.look = type === 'block' ? buildBlock(lm) : type === 'overhead' ? buildOverhead(lm) : buildWall(lm);
         mesh.add(ob.look); // follows the collision box (unscaled)
       }
@@ -1365,7 +1406,15 @@ export class Game {
     ob.mesh.visible = true;
     ob.mesh.position.set(LANE_X[lane], yOverride ?? SPEC[type].y, zOverride ?? SPAWN_Z);
     ob.mesh.rotation.set(0, 0, 0);
-    if (ob.look) {
+    if (type === 'core') {
+      const era = this.spawnEra();
+      if (!ob.looks) ob.looks = new Map();
+      let look = ob.looks.get(era);
+      if (!look) { look = buildToken(TOKEN_BY_ERA[era] ?? 'coin', this.tokenMats); ob.looks.set(era, look); ob.mesh.add(look); }
+      for (const l of ob.looks.values()) l.visible = l === look;
+      ob.look = look;
+      ob.mesh.material = this.hiddenMat;
+    } else if (ob.look) {
       const neo = this.spawnEra() === 0;
       ob.look.visible = neo;
       ob.mesh.material = neo ? this.hiddenMat : this.mat[type];
@@ -1898,8 +1947,8 @@ export class Game {
         if (!o.active) continue;
         o.mesh.position.z += move;
         if (type === 'core') {
-          o.mesh.rotation.y += dt * 3;
-          o.mesh.rotation.x += dt * 1.6;
+          if (o.look) { o.mesh.rotation.y += dt * 2.2; animateToken(o.look, dt); }
+          else { o.mesh.rotation.y += dt * 3; o.mesh.rotation.x += dt * 1.6; }
         }
         if (o.mesh.position.z > DESPAWN_Z) {
           o.active = false;

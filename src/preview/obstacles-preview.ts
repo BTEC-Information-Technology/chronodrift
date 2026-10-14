@@ -35,10 +35,9 @@ resize();
 // --- materials (the game's: dark flat-shaded body with the type's emissive colour)
 const emissiveMat = (color: number, intensity: number) => new THREE.MeshStandardMaterial({ color: 0x0a0a0a, emissive: color, emissiveIntensity: intensity, roughness: 0.6, metalness: 0.2, flatShading: true });
 const current = { block: emissiveMat(ERAS[0].block, 0.55), overhead: emissiveMat(ERAS[0].overhead, 0.6), wall: emissiveMat(ERAS[0].wall, 0.5), ride: emissiveMat(TRAIN_RIDE, 0.5), blockT: emissiveMat(TRAIN_BLOCK, 0.4) };
-const bodyMat = new THREE.MeshStandardMaterial({ color: 0x10131f, emissive: 0x05060c, emissiveIntensity: 0.5, roughness: 0.55, metalness: 0.35, flatShading: true });
-const lightMat = new THREE.MeshBasicMaterial({ color: 0xeaf6ff, toneMapped: false });
 const accent = { block: emissiveMat(ERAS[0].block, 1.6), overhead: emissiveMat(ERAS[0].overhead, 1.6), wall: emissiveMat(ERAS[0].wall, 1.5), ride: emissiveMat(TRAIN_RIDE, 1.5), blockT: emissiveMat(TRAIN_BLOCK, 1.4) };
-const mats = (a: THREE.Material): ObstacleMats => ({ body: bodyMat, accent: a, light: lightMat });
+const std = (color: number, roughness: number, metalness: number) => new THREE.MeshStandardMaterial({ color, roughness, metalness });
+const mats = (a: THREE.Material): ObstacleMats => ({ body: std(0x1b1f33, 0.42, 0.25), dark: std(0x0a0b14, 0.6, 0.3), accent: std(0xd9dde9, 0.5, 0.1), glass: std(0x0b1a2c, 0.08, 0.9), neon: a, white: new THREE.MeshBasicMaterial({ color: new THREE.Color(1.6, 1.6, 1.7), toneMapped: false }) });
 
 // --- "current" row (z = -3) and "proposal" row (z = +3), one column per type
 const cols = [-12, -8.5, -5, 3, 9];
@@ -72,7 +71,6 @@ const place = (g: THREE.Group, x: number, y: number, z: number) => { g.position.
 place(buildBlock(mats(accent.block)), cols[0], BLOCK_H / 2, 3);
 place(buildOverhead(mats(accent.overhead)), cols[1], OVERHEAD_Y + 0.35, 3);
 place(buildWall(mats(accent.wall)), cols[2], WALL_H / 2, 3);
-const std = (color: number, roughness: number, metalness: number) => new THREE.MeshStandardMaterial({ color, roughness, metalness });
 const mag = (neonColor: number): TrainMats => ({ body: std(0x1b1f33, 0.42, 0.25), dark: std(0x0a0b14, 0.6, 0.3), pad: std(0x15172a, 0.55, 0.4), accent: std(0xd9dde9, 0.5, 0.1), glass: std(0x0b1a2c, 0.08, 0.9), shield: std(0x1a3550, 0.06, 0.85), neon: new THREE.MeshBasicMaterial({ color: new THREE.Color(neonColor).multiplyScalar(1.5), toneMapped: false }), red: new THREE.MeshBasicMaterial({ color: new THREE.Color(1.15, 0, 0), toneMapped: false }), white: new THREE.MeshBasicMaterial({ color: new THREE.Color(1.6, 1.6, 1.7), toneMapped: false }) });
 // climbable (nose towards the player = +z) at three lengths, blocking (tail towards the player) at two
 for (const [len, x] of [[6, 1], [9, 5], [12, 10]] as [number, number][]) place(buildTrain(mag(TRAIN_RIDE), len), x, 0, 3 + 3);

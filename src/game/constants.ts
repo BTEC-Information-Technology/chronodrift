@@ -31,6 +31,6 @@ export const WALL_H = 2.6; // wall — change lane
 export const CORE_SCORE = 50; // base bonus per core (× the combo multiplier)
 
 // Lives: with N lives, the next one comes after N × LIFE_STEP more points (counter resets whenever N changes).
-export const LIFE_STEP = 500; // TEST value → production: 10000 (may later depend on the chosen difficulty)
+export const LIFE_STEP = 10000; // production value (may later depend on the chosen difficulty)
 export const MAX_LIVES = 5;
 export const RESPAWN_TIME = 3; // seconds the character stops and blinks after losing a life (player may act meanwhile)
