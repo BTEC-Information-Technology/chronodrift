@@ -38,7 +38,7 @@ Custom domains come from `wrangler.jsonc` (`chronodrift.fun-zone.app` and
 ## Conventions
 
 - **`BUILD` in `src/main.ts`** = the number shown on the start screen. Increment it on every
-  change so you can confirm on the phone that the new code actually loaded. (Current: **build 114**.)
+  change so you can confirm on the phone that the new code actually loaded. (Current: **build 119**.)
 - Collisions and game logic live in **logical space** (lanes `LANE_X`, `px/py`); models and
   curvature are **visual only**, so assets can be swapped in without touching gameplay.
 - Commit messages are written in **English**.
@@ -127,6 +127,12 @@ Custom domains come from `wrangler.jsonc` (`chronodrift.fun-zone.app` and
   length at startup and cloned; building placement queued and split over three frames (textures, socle +
   frontage, upper part); plain boxes for thin parts, indexed merges; every shader compiled on the start
   screen (`warmUp`). `?perf=1` shows the frame-time overlay and a Copy perf log button on game over.
+- **Train chains (build 115):** car lengths stay 6-15 (short cars are the challenge); the gap in front of a car is
+  derived from ITS length and the jump length (`jump + 2 - len`, clamped to 0.45-0.9 jumps) so a jump from the
+  very edge always lands at least 2 m onto the next car; a short next car (≤ 9) gets 4 tokens on the ideal jump
+  arc. Token pickup checks height (ground / roof / arc).
+- **Score popups (builds 116-119):** "+50" rises from the collected token's screen position, bigger and faster
+  with the game speed (`popAt` in `main.ts`).
 - **Tokens (build 107, `tokens.ts`):** one look per era — hourglass coin (Neo), glass hourglass (Prehistoric),
   crystal shard (Ancient), clock gear (Solarpunk), gyroscope orb (Unknown Future); neon in the era's core
   colour, coin-style spin plus orbiting rings.
