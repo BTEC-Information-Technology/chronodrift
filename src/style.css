@@ -413,3 +413,35 @@ body {
   pointer-events: none;
   z-index: 9;
 }
+
+/* Score popups rising from the collected token */
+#pops {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 6;
+  overflow: hidden;
+}
+#pops span {
+  position: absolute;
+  transform: translate(-50%, -50%);
+  font-size: 6.4vw;
+  font-weight: 900;
+  color: #7ef9ff;
+  text-shadow: 0 0 14px rgba(126, 249, 255, 0.9);
+  opacity: 0;
+  white-space: nowrap;
+  --rise: 390%;
+}
+#pops span.show {
+  animation: pop 1.05s ease-out forwards;
+}
+@keyframes pop {
+  0% { opacity: 0; transform: translate(-50%, -110%) scale(0.7); }
+  12% { opacity: 1; transform: translate(-50%, -130%) scale(1.15); }
+  55% { opacity: 1; transform: translate(-50%, calc(-110% - var(--rise) * 0.6)) scale(1); }
+  100% { opacity: 0; transform: translate(-50%, calc(-110% - var(--rise))) scale(0.95); }
+}
+@media (min-width: 640px) {
+  #pops span { font-size: 38px; }
+}

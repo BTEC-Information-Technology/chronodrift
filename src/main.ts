@@ -3,7 +3,7 @@ import { Game, setBuildTag } from './game/Game';
 import { loadSettings, saveSettings, DIFFICULTY_PRESETS } from './game/settings';
 
 // Bump the number on every change → on the phone you can confirm the new code has loaded.
-const BUILD = 114;
+const BUILD = 119;
 const verEl = document.getElementById('ver');
 if (verEl) verEl.textContent = `build ${BUILD}`;
 
@@ -39,12 +39,31 @@ game.onScore = (s) => {
 };
 
 let pickupTimer = 0;
-game.onCore = (value, mult) => {
+game.onCore = (value, mult, sx, sy, speedK) => {
   coins += 1;
   localStorage.setItem(COINS_KEY, String(coins));
   coinsEl.textContent = `◈ ${fmt(coins)}`;
-  showPickup(mult > 1 ? `+${value}  ×${mult}` : `+${value}`);
+  popAt(mult > 1 ? `+${value} ×${mult}` : `+${value}`, sx, sy, speedK);
 };
+// Floating score popups: rise from the collected token's screen position and fade (pooled elements).
+const popLayer = document.getElementById('pops') as HTMLElement;
+const popPool: HTMLElement[] = [];
+function popAt(text: string, x: number, y: number, speedK: number) {
+  let el = popPool.find((e) => !e.classList.contains('show'));
+  if (!el) { if (popPool.length >= 10) el = popPool[0]; else { el = document.createElement('span'); popLayer.appendChild(el); popPool.push(el); } }
+  el.textContent = text;
+  el.style.left = `${Math.round(x)}px`;
+  el.style.top = `${Math.round(y)}px`;
+  // faster and higher with the game speed, so quick successions don't pile up
+  const dur = Math.max(0.52, 1.05 / speedK);
+  el.style.animationDuration = `${dur.toFixed(2)}s`;
+  el.style.setProperty('--rise', `${Math.round(390 * Math.min(2, speedK))}%`);
+  el.classList.remove('show');
+  void el.offsetWidth; // restarts the animation
+  el.classList.add('show');
+  const me = el;
+  setTimeout(() => me.classList.remove('show'), dur * 1000);
+}
 function showPickup(text: string, ms = 650) {
   pickupEl.textContent = text;
   pickupEl.classList.remove('show');

@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { RoundedBoxGeometry } from 'three/examples/jsm/geometries/RoundedBoxGeometry.js';
 import {
   BLOCK_H,
+  BASE_SPEED,
   CORE_SCORE,
   LIFE_STEP,
   MAX_LIVES,
@@ -338,12 +339,13 @@ export class Game {
 
   onScore?: (s: number) => void;
   onGameOver?: (s: number) => void;
-  onCore?: (value: number, mult: number) => void; // bonus + multiplier on pickup
+  onCore?: (value: number, mult: number, sx: number, sy: number, speedK: number) => void; // bonus + multiplier on pickup, token screen position (px), speed factor (1 = base speed)
   onLives?: (lives: number, progress: number) => void; // lives count + progress (0..1) towards the next one
   onLifeGained?: (lives: number) => void;
   onLifeLost?: (lives: number) => void;
   onPerf?: (text: string) => void; // TEST: frame-time overlay (build 110)
   // --- TEST instrumentation: per-frame marks (what heavy work ran) + spike log ---
+  private tmpV = new THREE.Vector3();
   private perf = { marks: [] as string[], lastProg: 0, spikes: [] as string[], frames: 0, sumDt: 0, maxDt: 0, over33: 0, flushAt: 0, cpuMax: 0, log: [] as string[], sumAt: 0, sFrames: 0, sSum: 0, sMax: 0, sOver: 0 };
   /** TEST: the whole perf log of this session (spikes + 5 s summaries). */
   getPerfLog(): string { return `build ${BUILD_TAG} dpr ${window.devicePixelRatio} ratio ${this.renderer.getPixelRatio()} ${window.innerWidth}x${window.innerHeight} ua ${navigator.userAgent}\n` + this.perf.log.join('\n'); }
@@ -1601,6 +1603,15 @@ export class Game {
   }
 
   /** "Premium" cores on a train's roof. */
+  /** Tokens along the ideal jump parabola from the edge of a roof (takeoff at edgeZ, landing jumpLen further). */
+  private seedJumpArc(lane: number, edgeZ: number, jumpLen: number) {
+    for (const k of [0.2, 0.4, 0.6, 0.8]) {
+      const t = k * JUMP_AIRTIME;
+      const h = JUMP_V * t + 0.5 * GRAVITY * t * t; // height above the roof at that point of the arc
+      this.spawn('core', lane, TRAIN_H + 0.7 + h, edgeZ - k * jumpLen);
+    }
+  }
+
   private seedRoofCores(lane: number, frontZ: number, len: number) {
     const y = TRAIN_H + 0.7;
     for (let z = frontZ - 1.5; z > frontZ - len + 1; z -= 3.5) {
@@ -1640,14 +1651,25 @@ export class Game {
     // Climbable chain: the first car is teal (mountable from the ground), the rest mixed
     // (teal/red) — you can jump from teal onto red too. Gap ≤ 1 jump (hoppable).
     const cars = 1 + randInt(this.rng, 3);
+    const lens: number[] = [];
+    for (let i = 0; i < cars; i++) lens.push(6 + this.rng() * 9); // 6..15 (short cars stay: they are the challenge)
     let front = SPAWN_Z;
     let consumed = 0;
     for (let i = 0; i < cars; i++) {
       const trampoline = i === 0 ? true : this.rng() < 0.5;
-      const len = 6 + this.rng() * 9; // 6..15
+      const len = lens[i];
       this.spawnTrain(trampoline, lane, front, len);
       this.seedRoofCores(lane, front, len);
-      const gap = i < cars - 1 ? jumpLen * (0.45 + this.rng() * 0.45) : 0; // 0.45..0.9 jump
+      let gap = 0;
+      if (i < cars - 1) {
+        // Inverse rule: the gap depends on the NEXT car's length, so a jump from the very edge of this car lands
+        // at least 2 m onto the next one (landing window = [edge - (len2 - 2), edge]); still 0.45..0.9 jumps.
+        const len2 = lens[i + 1];
+        const gapMin = Math.max(0.45 * jumpLen, jumpLen + 2 - len2);
+        const gapMax = Math.max(gapMin, Math.min(0.9 * jumpLen, jumpLen - 2));
+        gap = gapMin + this.rng() * (gapMax - gapMin);
+        if (len2 <= 9) this.seedJumpArc(lane, front - len, jumpLen); // short next car: tokens on the ideal jump arc invite the jump
+      }
       consumed += len + gap;
       front -= len + gap;
     }
@@ -2050,6 +2072,7 @@ export class Game {
         if (!rangesOverlap(pz0, pz1, oz - sp.d / 2, oz + sp.d / 2)) continue;
         const xOverlap = Math.abs(this.px - LANE_X[o.lane]) < PLAYER_W / 2 + sp.w / 2;
         if (!xOverlap) continue;
+        if (type === 'core') { const cy = o.mesh.position.y; if (this.py + PLAYER_H < cy - 0.45 || this.py > cy + 0.45) continue; } // tokens have a height now (roof / jump arc)
         this.hit(o);
       }
     }
@@ -2177,7 +2200,8 @@ export class Game {
       const mult = Math.min(MAX_MULT, 1 + Math.floor(this.coreCombo / 5));
       const value = CORE_SCORE * mult;
       this.score += value;
-      this.onCore?.(value, mult);
+      const v = this.tmpV.copy(o.mesh.position).project(this.camera); // where the token was on screen → the popup rises from there
+      this.onCore?.(value, mult, (v.x + 1) / 2 * window.innerWidth, (1 - v.y) / 2 * window.innerHeight, this.speed / BASE_SPEED);
       return;
     }
     let cleared = false;
