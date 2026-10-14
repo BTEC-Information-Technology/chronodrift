@@ -29,7 +29,6 @@ import { mulberry32, randInt, weighted } from './rng';
 import { ERAS, RIFT_COLOR, type EraPalette } from './eras';
 import { DIFFICULTY, sampleDifficulty } from './difficulty';
 import type { ObType, SimpleType } from './types';
-import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { CharacterController, type CharState } from './character';
 import CLIP_WINDOWS from './neon-outlaw.clips.json';
 import { makeFacadeTextures, makeFacade, makeBillboardTextures, SkyTraffic, SkyVehicles, AD_ASPECT, type AdFormat, type FacadeSet } from './cyber';
@@ -42,6 +41,7 @@ import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPa
 import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
 import { makeCityEnvMap, makeStarMaterial, makeAsphaltTexture } from './cyber';
 import { buildToken, animateToken, TOKEN_BY_ERA, type TokenMats } from './tokens';
+import { buildSocle, buildUpper, disposeLook, buildRoadRelief, makeInteriorTexture, INTERIOR_KINDS, SOCLE_H, type CityMats, type BuildingLook, type BuildingSpec } from './city';
 import type { Settings } from './settings';
 
 const CAM_LOOK_Z = -22; // fixed look-ahead distance the camera points at
@@ -127,6 +127,14 @@ function makeRampGeometry(): THREE.BufferGeometry {
   return g;
 }
 
+export let BUILD_TAG = '?';
+export function setBuildTag(t: string) { BUILD_TAG = t; }
+
+/** One pooled city building: relief look rebuilt at placement; facade materials owned here (curvature applied once). */
+/** A queued placement, advanced one stage per frame so no frame carries a whole building. */
+interface PendingBuilding { b: CityBuilding; x: number; z: number; w: number; topH: number; d: number; ad: boolean; dist: number; stage: number; spec?: BuildingSpec; group?: THREE.Group }
+interface CityBuilding { g: THREE.Group; bm: THREE.MeshStandardMaterial; tm: THREE.MeshStandardMaterial; neonMat: THREE.MeshBasicMaterial; look?: BuildingLook; panel: THREE.Mesh; roof: THREE.Group; active: boolean }
+
 const SPEC: Record<SimpleType, { w: number; h: number; d: number; y: number; color: number }> = {
   block: { w: 1.7, h: BLOCK_H, d: 1.2, y: BLOCK_H / 2, color: 0xff5a1e },
   overhead: { w: 2.0, h: 0.7, d: 1.0, y: OVERHEAD_Y + 0.35, color: 0xff36c8 },
@@ -150,6 +158,8 @@ export class Game {
   private trains: Ob[] = [];
   private hiddenMat!: THREE.MeshBasicMaterial;
   private trainLook!: { ride: TrainMats; block: TrainMats };
+  private trainCache = new Map<number, THREE.Group>(); // train looks per integer length (built once; spawns clone them)
+  private pendingBuildings: PendingBuilding[] = []; // placements in progress: one stage per frame (textures → socle+frontage → upper+reveal)
   private lookBase!: Omit<TrainMats, 'neon'>; // shared smooth materials (hull, panels, glass, lights)
   private tokenMats!: TokenMats; // pickup tokens: dark metal, glass, neon in the era's core colour // Neo-Cyberpunk train materials per type (neon colour differs)
   private composer!: EffectComposer; // render + bloom (the neon glow) + output
@@ -233,24 +243,11 @@ export class Game {
   private roofPropMat = new THREE.MeshStandardMaterial({ color: 0x0b0f1c, emissive: 0x101a30, emissiveIntensity: 0.6, roughness: 0.8, flatShading: true });
   private roofLightMat = new THREE.MeshBasicMaterial({ color: 0xff3050, toneMapped: false });
 
-  private buildings: { g: THREE.Group; box: THREE.Mesh; panel: THREE.Mesh; roof: THREE.Group; edges: THREE.Mesh; ring: THREE.Mesh; active: boolean }[] = [];
+  private buildGeo = new THREE.BoxGeometry(1, 1, 1); // unit box (skyline backdrop)
+  private buildings: CityBuilding[] = [];
+  private cityMats!: CityMats; // shared street-relief materials (socles, frontages, curbs)
   private buildAccum = 0;
   private buildSide = -1;
-  private buildGeo = new THREE.BoxGeometry(1, 1, 1);
-  // Neon frame for a building: 4 vertical edge bars (unit cube corners) + a roofline ring; scaled with the building.
-  private edgeBarsGeo = (() => {
-    const t = 0.012; // thickness as a fraction of the building size (0.15 units on a 12-unit building)
-    const parts: THREE.BufferGeometry[] = [];
-    for (const sx of [-1, 1]) for (const sz of [-1, 1]) { const b = new THREE.BoxGeometry(t, 1, t); b.translate(sx * (0.5 - t / 2), 0, sz * (0.5 - t / 2)); parts.push(b); }
-    return mergeGeometries(parts)!;
-  })();
-  private roofRingGeo = (() => {
-    const t = 0.012, ty = 0.0025;
-    const parts: THREE.BufferGeometry[] = [];
-    for (const sz of [-1, 1]) { const b = new THREE.BoxGeometry(1, ty, t); b.translate(0, 0.5 - ty / 2, sz * (0.5 - t / 2)); parts.push(b); }
-    for (const sx of [-1, 1]) { const b = new THREE.BoxGeometry(t, ty, 1); b.translate(sx * (0.5 - t / 2), 0.5 - ty / 2, 0); parts.push(b); }
-    return mergeGeometries(parts)!;
-  })();
   private buildMats: THREE.MeshStandardMaterial[] = [];
   private buildLineMats: THREE.LineBasicMaterial[] = [];
   private adCountdown = [7, 9]; // how many fillers until the next billboard block (per side)
@@ -345,10 +342,17 @@ export class Game {
   onLives?: (lives: number, progress: number) => void; // lives count + progress (0..1) towards the next one
   onLifeGained?: (lives: number) => void;
   onLifeLost?: (lives: number) => void;
+  onPerf?: (text: string) => void; // TEST: frame-time overlay (build 110)
+  // --- TEST instrumentation: per-frame marks (what heavy work ran) + spike log ---
+  private perf = { marks: [] as string[], lastProg: 0, spikes: [] as string[], frames: 0, sumDt: 0, maxDt: 0, over33: 0, flushAt: 0, cpuMax: 0, log: [] as string[], sumAt: 0, sFrames: 0, sSum: 0, sMax: 0, sOver: 0 };
+  /** TEST: the whole perf log of this session (spikes + 5 s summaries). */
+  getPerfLog(): string { return `build ${BUILD_TAG} dpr ${window.devicePixelRatio} ratio ${this.renderer.getPixelRatio()} ${window.innerWidth}x${window.innerHeight} ua ${navigator.userAgent}\n` + this.perf.log.join('\n'); }
+  private mark(s: string) { this.perf.marks.push(s); }
+  private timed<T>(name: string, fn: () => T): T { const t0 = performance.now(); const r = fn(); const ms = performance.now() - t0; if (ms >= 0.5) this.mark(`${name} ${ms.toFixed(1)}ms`); return r; }
 
   constructor(canvas: HTMLCanvasElement) {
     this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: 'high-performance' });
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5)); // 1.5: dense phone screens stay crisp with 44% fewer pixels than 2.0
 
     this.scene.background = new THREE.Color(0x05010f);
     this.fog = new THREE.Fog(0x0a0420, 30, 250);
@@ -359,10 +363,13 @@ export class Game {
     this.camera.lookAt(0, this.camLookY, CAM_LOOK_Z);
 
     // Post: bloom makes the emissive neon (HDR colours > 1) glow; the rest of the scene stays under the threshold.
-    this.composer = new EffectComposer(this.renderer, new THREE.WebGLRenderTarget(1, 1, { type: THREE.HalfFloatType, samples: 4 }));
+    this.composer = new EffectComposer(this.renderer, new THREE.WebGLRenderTarget(1, 1, { type: THREE.HalfFloatType, samples: 2 }));
     this.cityEnv = makeCityEnvMap(this.renderer);
     this.composer.addPass(new RenderPass(this.scene, this.camera));
-    this.composer.addPass(new UnrealBloomPass(new THREE.Vector2(1, 1), 0.45, 0.3, 0.9));
+    const bloom = new UnrealBloomPass(new THREE.Vector2(1, 1), 0.45, 0.3, 0.9);
+    const bloomSetSize = bloom.setSize.bind(bloom);
+    bloom.setSize = (w: number, h: number) => bloomSetSize(w / 2, h / 2); // bloom mips at half resolution (the glow is soft anyway)
+    this.composer.addPass(bloom);
     this.composer.addPass(new OutputPass());
 
     this.hemi = new THREE.HemisphereLight(0x6688ff, 0x140022, 1.0);
@@ -442,6 +449,19 @@ export class Game {
       neon: new THREE.MeshBasicMaterial({ color: new THREE.Color(SPEC.core.color).multiplyScalar(1.6), toneMapped: false }),
     };
     this.extraCurveMats.push(this.tokenMats.dark, this.tokenMats.glass, this.tokenMats.neon);
+    // street relief materials (shared by all buildings and the road)
+    const interiors = {} as CityMats['interiors'];
+    for (const k of INTERIOR_KINDS) interiors[k] = [0, 1].map(() => new THREE.MeshBasicMaterial({ map: makeInteriorTexture(k, Math.random), toneMapped: false }));
+    this.cityMats = {
+      concrete: new THREE.MeshStandardMaterial({ color: 0x3a3f5c, roughness: 0.7, metalness: 0.1, envMap: env, envMapIntensity: 0.25 }),
+      dark: trainBase.dark, white: trainBase.white, red: trainBase.red, glassDark: trainBase.glass,
+      warm: this.emissiveMat(0xffd9a0, 0.8),
+      glassSheen: new THREE.MeshStandardMaterial({ color: 0x9fdcff, roughness: 0.05, metalness: 0.6, envMap: env, envMapIntensity: 1.2, transparent: true, opacity: 0.22, depthWrite: false }),
+      hazardY: new THREE.MeshStandardMaterial({ color: 0xffd23a, roughness: 0.6 }),
+      hazardK: new THREE.MeshStandardMaterial({ color: 0x15161e, roughness: 0.6 }),
+      interiors,
+    };
+    this.extraCurveMats.push(this.cityMats.concrete, this.cityMats.warm, this.cityMats.glassSheen, this.cityMats.hazardY, this.cityMats.hazardK, ...Object.values(interiors).flat());
     this.trainBlockMat = this.emissiveMat(TRAIN_BLOCK_COLOR, 0.4, true);
     this.trainRideMat = this.emissiveMat(TRAIN_RIDE_COLOR, 0.5, true);
     // Lush vegetation (Prehistoric) and damaged metal debris (Ancient) on the train.
@@ -455,9 +475,11 @@ export class Game {
     this.portal = { mesh: fx.group, fx, active: false, crossed: false };
 
     this.buildTrack();
+    for (let L = 6; L <= 23; L++) this.trainLookFor(L, true); // all train lengths built now, never during play
     this.buildBuildings();
     this.buildScenery();
     this.enableCurve();
+    this.warmUp();
     this.resetPlayer();
     window.addEventListener('resize', this.onResize);
     window.addEventListener('keydown', this.onKey);
@@ -466,6 +488,48 @@ export class Game {
     canvas.addEventListener('touchend', this.onTouchEnd, { passive: false });
     this.onResize();
     this.render();
+  }
+
+  /** Compiles every shader the game can need before play (rain, portal, tokens of all eras, obstacles, train,
+   * a building with its frontage), so no "first time" compile lands on a frame during the game (50-200 ms on phones). */
+  private warmUp() {
+    const warm = new THREE.Group();
+    const lmFor = (type: 'block' | 'overhead' | 'wall'): ObstacleMats => { const b = this.lookBase; return { body: b.body, dark: b.dark, accent: b.accent, glass: b.glass, neon: this.lookAccent[type], white: b.white }; };
+    warm.add(buildBlock(lmFor('block')), buildOverhead(lmFor('overhead')), buildWall(lmFor('wall')));
+    for (const kind of TOKEN_BY_ERA) warm.add(buildToken(kind, this.tokenMats));
+    const trains = [this.trainLookFor(6, true), this.trainLookFor(6, false)]; // clones share the cached geometry: not disposed below
+    warm.add(...trains);
+    const b0 = this.buildings[0];
+    if (b0) {
+      const f = makeFacade(10, 20, Math.random, { normal: true });
+      b0.bm.map = f.map; b0.bm.emissiveMap = f.emissive; b0.bm.normalMap = f.normal ?? null; b0.bm.needsUpdate = true;
+      b0.tm.map = f.map; b0.tm.emissiveMap = f.emissive; b0.tm.normalMap = f.normal ?? null; b0.tm.needsUpdate = true;
+      const spec: BuildingSpec = { w: 10, topH: 30, d: 10, side: -1, h1: 20, tw: 7, td: 8, towerX: 0 };
+      warm.add(buildSocle(spec, this.cityMats, b0.neonMat, Math.random), buildUpper(spec, this.cityMats, b0.neonMat, b0.bm, b0.tm, Math.random).group);
+      b0.panel.visible = true;
+    }
+    this.scene.add(warm);
+    const rainVis = this.rain.group.visible, portalVis = this.portal.fx.group.visible;
+    this.rain.group.visible = true;
+    this.portal.fx.group.visible = true;
+    this.renderer.compile(this.scene, this.camera); // every material in the scene, frustum or not
+    this.rain.group.visible = rainVis;
+    this.portal.fx.group.visible = portalVis;
+    if (b0) b0.panel.visible = false;
+    for (const t of trains) warm.remove(t);
+    warm.traverse((o) => { const m = o as THREE.Mesh; if (m.isMesh) m.geometry.dispose(); });
+    warm.removeFromParent();
+  }
+
+  /** A train look for `len`: cached per integer length (ride materials), cloned per spawn (block variant = neon swap), stretched to the exact length. */
+  private trainLookFor(len: number, trampoline: boolean): THREE.Group {
+    const L = Math.max(6, Math.min(23, Math.round(len)));
+    let base = this.trainCache.get(L);
+    if (!base) { base = this.timed(`train${L}`, () => buildTrain(this.trainLook.ride, L, TRAIN_W, TRAIN_H, RAMP_LEN)); this.trainCache.set(L, base); }
+    const look = base.clone();
+    if (!trampoline) look.traverse((o) => { const mm = o as THREE.Mesh; if (mm.isMesh && mm.name === 'neon') mm.material = this.trainLook.block.neon; });
+    look.scale.z = len / L;
+    return look;
   }
 
   private emissiveMat(color: number, intensity: number, flat = false): THREE.MeshStandardMaterial {
@@ -574,8 +638,11 @@ export class Game {
 
   /** Opens a portal ahead towards era `target`; the switch happens when passing through it. */
   private openPortal(target: number) {
+    this.mark('portal');
     // If leaving Cyberpunk → clear the city BEYOND the portal (the new era starts there).
     if (this.era === 0 && target !== 0) {
+      for (const q of this.pendingBuildings) { q.b.active = false; q.b.g.visible = false; if (q.group) disposeLook(q.group); } // not built yet → just released
+      this.pendingBuildings.length = 0;
       for (const b of this.buildings) {
         if (b.active && b.g.position.z < SPAWN_Z) {
           b.active = false;
@@ -829,22 +896,12 @@ export class Game {
     const tankGeo = new THREE.CylinderGeometry(1, 1, 1, 8);
     const lightGeo = new THREE.SphereGeometry(0.22, 6, 4);
     for (let i = 0; i < 40; i++) {
-      const k = i % defs.length;
       const g = new THREE.Group();
-      // per-building material: facade textures (repeat set at placement so the windows keep their size)
-      // per-building material; the facade textures are generated at placement (unique per building)
-      const f0 = makeFacade(10, 40, Math.random);
-      const bm = new THREE.MeshStandardMaterial({ map: f0.map, emissiveMap: f0.emissive, color: 0xd8dcff, emissive: 0xffffff, emissiveIntensity: 0.9, roughness: 0.7, metalness: 0.2, envMap: this.cityEnv, envMapIntensity: 0.35 });
-      this.extraCurveMats.push(bm);
-      const box = new THREE.Mesh(this.buildGeo, bm);
-      g.add(box);
+      // per-building facade materials (body + tower); the textures are generated at placement
+      const facadeMat = () => { const mm = new THREE.MeshStandardMaterial({ color: 0xd8dcff, emissive: 0xffffff, emissiveIntensity: 0.9, roughness: 0.6, metalness: 0.2, envMap: this.cityEnv, envMapIntensity: 0.35, normalScale: new THREE.Vector2(0.9, 0.9) }); this.extraCurveMats.push(mm); return mm; };
+      const bm = facadeMat(), tm = facadeMat();
       const neonMat = new THREE.MeshBasicMaterial({ color: 0x00eaff, toneMapped: false });
       this.extraCurveMats.push(neonMat);
-      const edgesMesh = new THREE.Mesh(this.edgeBarsGeo, neonMat);
-      const ring = new THREE.Mesh(this.roofRingGeo, neonMat);
-      edgesMesh.visible = ring.visible = false; // the neon frame is painted into the facade texture (smooth, no flicker)
-      g.add(edgesMesh, ring);
-      void k;
       const panelMat = new THREE.MeshBasicMaterial({ map: this.adSets[i % this.adSets.length].square, toneMapped: false });
       this.extraCurveMats.push(panelMat);
       const panel = new THREE.Mesh(panelGeo, panelMat);
@@ -862,7 +919,7 @@ export class Game {
       g.add(roof);
       g.visible = false;
       this.scene.add(g);
-      this.buildings.push({ g, box, panel, roof, edges: edgesMesh, ring, active: false });
+      this.buildings.push({ g, bm, tm, neonMat, panel, roof, active: false });
     }
   }
 
@@ -870,42 +927,64 @@ export class Game {
     return this.buildings.find((x) => !x.active) ?? null;
   }
 
-  /** Positions and activates a building (with/without a full-facade billboard). */
-  private placeBuilding(b: { g: THREE.Group; box: THREE.Mesh; panel: THREE.Mesh; roof: THREE.Group; edges: THREE.Mesh; ring: THREE.Mesh; active: boolean }, x: number, z: number, w: number, topH: number, d: number, ad: boolean) {
+  /** Queues a placement: the building is reserved now and built over three frames (textures, socle + frontage, upper part). */
+  private queueBuilding(b: CityBuilding, x: number, z: number, w: number, topH: number, d: number, ad: boolean) {
     b.active = true;
-    b.g.visible = true;
-    b.box.scale.set(w, topH + 25, d); // +25 below the horizon → no sky underneath
-    b.box.position.set(0, (topH - 25) / 2, 0);
-    b.g.position.set(x, 0, z);
-    // unique facade sized to this building (the box extends 25 units below the horizon)
-    const bm = b.box.material as THREE.MeshStandardMaterial;
-    bm.map?.dispose();
-    bm.emissiveMap?.dispose();
-    const f = makeFacade(w, topH + 25, Math.random);
-    bm.map = f.map;
-    bm.emissiveMap = f.emissive;
-    // neon frame in the building's own colour: vertical edges + roofline ring
-    (b.edges.material as THREE.MeshBasicMaterial).color.set(f.neon).multiplyScalar(1.6); // HDR → bloom
-    b.edges.scale.set(w, topH + 25, d);
-    b.edges.position.set(0, (topH - 25) / 2, 0);
-    b.ring.scale.copy(b.edges.scale);
-    b.ring.position.copy(b.edges.position);
-    // rooftop props
+    b.g.visible = false;
+    this.pendingBuildings.push({ b, x, z, w, topH, d, ad, dist: this.worldDist, stage: 0 });
+  }
+  /** Runs ONE stage of the first queued building per frame (~2-6 ms each instead of 9-27 ms at once). */
+  private processBuildingQueue() {
+    const q = this.pendingBuildings[0];
+    if (!q) return;
+    const b = q.b;
+    const sh = SOCLE_H;
+    if (q.stage === 0) {
+      // stage 1: dimensions + unique facades (textures) for the body and the tower; old textures freed
+      const side = q.x < 0 ? -1 : 1;
+      const h1 = sh + (q.topH - sh) * (0.55 + Math.random() * 0.25);
+      const tw = q.w * (0.6 + Math.random() * 0.2), td = q.d * 0.8;
+      const towerX = (Math.random() - 0.5) * (q.w - tw);
+      q.spec = { w: q.w, topH: q.topH, d: q.d, side, h1, tw, td, towerX };
+      for (const mm of [b.bm, b.tm]) { mm.map?.dispose(); mm.emissiveMap?.dispose(); mm.normalMap?.dispose(); }
+      const f = this.timed('facade', () => makeFacade(q.w, h1 - sh, Math.random, { normal: true }));
+      b.bm.map = f.map; b.bm.emissiveMap = f.emissive; b.bm.normalMap = f.normal ?? null; b.bm.needsUpdate = true;
+      const f2 = this.timed('facade2', () => makeFacade(tw, q.topH - h1, Math.random, { normal: true }));
+      b.tm.map = f2.map; b.tm.emissiveMap = f2.emissive; b.tm.normalMap = f2.normal ?? null; b.tm.needsUpdate = true;
+      b.neonMat.color.set(f.neon).multiplyScalar(1.6); // HDR → bloom
+      if (b.look) { disposeLook(b.look.group); b.look = undefined; }
+      q.group = new THREE.Group();
+      q.stage = 1;
+      return;
+    }
+    if (q.stage === 1) {
+      // stage 2: socle with the random frontage (the heaviest part)
+      q.group!.add(this.timed('socle', () => buildSocle(q.spec!, this.cityMats, b.neonMat, Math.random)));
+      q.stage = 2;
+      return;
+    }
+    // stage 3: body + tower + parapets + tubes, roof props, billboard; then reveal at the advanced position
+    const spec = q.spec!;
+    const up = this.timed('upper', () => buildUpper(spec, this.cityMats, b.neonMat, b.bm, b.tm, Math.random));
+    q.group!.add(up.group);
+    b.look = { group: q.group!, body: up.body, tower: up.tower, tubes: up.tubes };
+    b.g.add(b.look.group);
+    const { topH, tw, td, towerX, h1, w, d } = spec;
     const [antenna, ac, tank] = b.roof.children as THREE.Mesh[];
     antenna.visible = Math.random() < 0.6;
     const ah = 3 + Math.random() * 5;
     antenna.scale.set(1, ah, 1);
-    antenna.position.set((Math.random() - 0.5) * w * 0.6, topH + ah / 2, (Math.random() - 0.5) * d * 0.5);
+    antenna.position.set(towerX + (Math.random() - 0.5) * tw * 0.6, topH + ah / 2, (Math.random() - 0.5) * td * 0.5);
     ac.visible = Math.random() < 0.7;
     ac.scale.set(1.2 + Math.random() * 1.6, 0.9 + Math.random() * 0.8, 1.2 + Math.random() * 1.6);
-    ac.position.set((Math.random() - 0.5) * w * 0.6, topH + ac.scale.y / 2, (Math.random() - 0.5) * d * 0.5);
+    ac.position.set(towerX + (Math.random() - 0.5) * tw * 0.6, topH + ac.scale.y / 2, (Math.random() - 0.5) * td * 0.5);
     tank.visible = Math.random() < 0.35;
     const tr = 0.8 + Math.random() * 0.8;
     tank.scale.set(tr, 1.6 + Math.random(), tr);
-    tank.position.set((Math.random() - 0.5) * w * 0.5, topH + tank.scale.y / 2, (Math.random() - 0.5) * d * 0.5);
-    if (ad) {
+    tank.position.set(towerX + (Math.random() - 0.5) * tw * 0.5, topH + tank.scale.y / 2, (Math.random() - 0.5) * td * 0.5);
+    if (q.ad) {
       b.panel.visible = true;
-      const availW = w * 0.92, availH = topH * 0.92;
+      const availW = w * 0.92, availH = (h1 - sh) * 0.92;
       const avail = availW / availH;
       let fmt: AdFormat = 'square';
       let best = Infinity;
@@ -920,10 +999,13 @@ export class Game {
       pm.map = this.adSets[(Math.random() * this.adSets.length) | 0][fmt];
       pm.color.setScalar(1);
       b.panel.scale.set(pw, ph, 1);
-      b.panel.position.set(0, topH * 0.5, d / 2 + 0.2); // centred on the facade
+      b.panel.position.set(0, sh + (h1 - sh) * 0.5, d / 2 + 0.2); // centred on the body's facade
     } else {
       b.panel.visible = false;
     }
+    b.g.position.set(q.x, 0, q.z + (this.worldDist - q.dist)); // z advanced by the distance travelled during the stages
+    b.g.visible = true;
+    this.pendingBuildings.shift();
   }
 
   /** A dense filler building (varied heights, from right next to the road to deep in the back).
@@ -938,7 +1020,7 @@ export class Game {
     const d = 7 + Math.random() * 9;
     let xInner = 8 + Math.random() * 18;
     if (this.worldDist < this.reserveUntil[s]) xInner = Math.max(xInner, this.reserveOuterX[s]);
-    this.placeBuilding(b, side * (xInner + w / 2), BUILD_SPAWN_Z - Math.random() * 12, w, topH, d, false);
+    this.queueBuilding(b, side * (xInner + w / 2), BUILD_SPAWN_Z - Math.random() * 12, w, topH, d, false);
   }
 
   /** Billboard block: the billboard building sits right next to the road; the guards fill the lateral gap between
@@ -949,7 +1031,7 @@ export class Game {
     const zAd = BUILD_SPAWN_Z - Math.random() * 8; // the billboard, further away (towards the horizon)
     const adW = 13 + Math.random() * 5;
     const adB = this.nextBuilding();
-    if (adB) this.placeBuilding(adB, side * (adW / 2 + 8), zAd, adW, 26 + Math.random() * 12, 8 + Math.random() * 6, true);
+    if (adB) this.queueBuilding(adB, side * (adW / 2 + 8), zAd, adW, 26 + Math.random() * 12, 8 + Math.random() * 6, true);
     // Guards: a contiguous row that fills the lateral gap from the billboard's edge outwards (GUARD_SPAN).
     const xInner = 8 + adW; // the billboard's outer edge = the guards' inner edge
     const xOuter = xInner + GUARD_SPAN;
@@ -960,7 +1042,7 @@ export class Game {
       if (!gb) break;
       const gw = Math.min(11 + Math.random() * 6, xOuter - x);
       // Slightly closer to the player than the billboard (zAd+) and further back laterally → doesn't cover it.
-      this.placeBuilding(gb, side * (x + gw / 2), zAd + 6 + j * 4, gw, 30 + Math.random() * 28, 8 + Math.random() * 6, false);
+      this.queueBuilding(gb, side * (x + gw / 2), zAd + 6 + j * 4, gw, 30 + Math.random() * 28, 8 + Math.random() * 6, false);
       x += gw;
       j++;
     }
@@ -1317,7 +1399,10 @@ export class Game {
     }
 
     const target = inCyber && this.rainOn ? 1 : 0;
+    const prevRain = this.rainLevel;
     this.rainLevel = damp(this.rainLevel, target, 1.2, dt);
+    if (prevRain < 0.01 && this.rainLevel >= 0.01) this.mark('rain on');
+    if (prevRain >= 0.01 && this.rainLevel < 0.01) this.mark('rain off');
     this.rain.update(dt, this.camX, this.rainLevel, Math.random);
 
   }
@@ -1328,7 +1413,6 @@ export class Game {
     asphalt.repeat.set(2, SEGMENT_LEN / 3.6); // 3.6 m tiles across the track width
     this.groundMat = new THREE.MeshStandardMaterial({ color: 0x0b0820, map: asphalt, roughness: 0.8, metalness: 0.12, envMap: this.cityEnv, envMapIntensity: 0.3, emissive: 0x0a0526, emissiveIntensity: 0.4, transparent: true });
     // rails: a thin bright core + a wide soft additive halo lying on the road (diffuse edges instead of a hard band)
-    const railGeo = new THREE.BoxGeometry(0.1, 0.5, SEGMENT_LEN);
     this.railLMat = this.emissiveMat(0x00eaff, 0.95);
     this.railRMat = this.emissiveMat(0xff36c8, 1.5);
     const glowTex = (() => { const c = document.createElement('canvas'); c.width = 64; c.height = 1; const g = c.getContext('2d')!; const gr = g.createLinearGradient(0, 0, 64, 0); gr.addColorStop(0, 'rgba(255,255,255,0)'); gr.addColorStop(0.5, 'rgba(255,255,255,1)'); gr.addColorStop(1, 'rgba(255,255,255,0)'); g.fillStyle = gr; g.fillRect(0, 0, 64, 1); const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; return t; })();
@@ -1338,7 +1422,6 @@ export class Game {
     this.extraCurveMats.push(this.railGlowL, this.railGlowR);
     const glowGeo = new THREE.PlaneGeometry(0.6, SEGMENT_LEN);
     glowGeo.rotateX(-Math.PI / 2);
-    const lineGeo = new THREE.BoxGeometry(0.06, 0.02, SEGMENT_LEN);
     this.lineMat = this.emissiveMat(0x3344aa, 0.8);
     // Wide side ground (the scenery stands on it); hidden by default, enabled per era in update.
     const terrainGeo = new THREE.BoxGeometry(140, 0.5, SEGMENT_LEN);
@@ -1364,23 +1447,14 @@ export class Game {
       const ground = new THREE.Mesh(groundGeo, this.groundMat);
       ground.position.y = -0.25;
       g.add(ground);
-      const rl = new THREE.Mesh(railGeo, this.railLMat);
-      rl.position.set(-TRACK_HALF_W, 0.25, 0);
-      g.add(rl);
-      const rr = new THREE.Mesh(railGeo, this.railRMat);
-      rr.position.set(TRACK_HALF_W, 0.25, 0);
-      g.add(rr);
+      // road relief: curbs with the neon tubes, posts with lights, drains, dashed lane marks, a seam
+      g.add(buildRoadRelief(SEGMENT_LEN, TRACK_HALF_W, { concrete: this.cityMats.concrete, dark: this.cityMats.dark, white: this.cityMats.white, railL: this.railLMat, railR: this.railRMat, line: this.lineMat }));
       const gl = new THREE.Mesh(glowGeo, this.railGlowL);
-      gl.position.set(-TRACK_HALF_W, 0.515, 0);
+      gl.position.set(-(TRACK_HALF_W - 0.2), 0.012, 0);
       g.add(gl);
       const gr = new THREE.Mesh(glowGeo, this.railGlowR);
-      gr.position.set(TRACK_HALF_W, 0.515, 0);
+      gr.position.set(TRACK_HALF_W - 0.2, 0.012, 0);
       g.add(gr);
-      for (const x of [-1.1, 1.1]) {
-        const line = new THREE.Mesh(lineGeo, this.lineMat);
-        line.position.set(x, 0.02, 0);
-        g.add(line);
-      }
       g.position.z = DESPAWN_Z - SEGMENT_LEN / 2 - i * SEGMENT_LEN;
       this.grounds.push(g);
       this.scene.add(g);
@@ -1395,7 +1469,7 @@ export class Game {
       if (type !== 'core') {
         const b = this.lookBase;
         const lm: ObstacleMats = { body: b.body, dark: b.dark, accent: b.accent, glass: b.glass, neon: this.lookAccent[type], white: b.white };
-        ob.look = type === 'block' ? buildBlock(lm) : type === 'overhead' ? buildOverhead(lm) : buildWall(lm);
+        ob.look = this.timed('obstacle', () => (type === 'block' ? buildBlock(lm) : type === 'overhead' ? buildOverhead(lm) : buildWall(lm)));
         mesh.add(ob.look); // follows the collision box (unscaled)
       }
       this.pools[type].push(ob);
@@ -1410,7 +1484,7 @@ export class Game {
       const era = this.spawnEra();
       if (!ob.looks) ob.looks = new Map();
       let look = ob.looks.get(era);
-      if (!look) { look = buildToken(TOKEN_BY_ERA[era] ?? 'coin', this.tokenMats); ob.looks.set(era, look); ob.mesh.add(look); }
+      if (!look) { const l = this.timed('token', () => buildToken(TOKEN_BY_ERA[era] ?? 'coin', this.tokenMats)); look = l; ob.looks.set(era, l); ob.mesh.add(l); }
       for (const l of ob.looks.values()) l.visible = l === look;
       ob.look = look;
       ob.mesh.material = this.hiddenMat;
@@ -1455,12 +1529,11 @@ export class Game {
     }
     // Neo-Cyberpunk: the maglev locomotive (nose = ramp towards the player on the climbable one, tail on the blocking one)
     if (ob.look) {
-      ob.look.removeFromParent();
-      ob.look.traverse((o) => { if ((o as THREE.Mesh).isMesh) (o as THREE.Mesh).geometry.dispose(); });
+      ob.look.removeFromParent(); // geometry is shared with the cache: not disposed
       ob.look = undefined;
     }
     if (this.spawnEra() === 0) {
-      ob.look = buildTrain(trampoline ? this.trainLook.ride : this.trainLook.block, len, TRAIN_W, TRAIN_H, RAMP_LEN);
+      ob.look = this.trainLookFor(len, trampoline);
       ob.look.rotation.y = trampoline ? 0 : Math.PI;
       ob.look.position.set(LANE_X[lane], 0, frontZ - len / 2);
       this.scene.add(ob.look);
@@ -1706,6 +1779,8 @@ export class Game {
       b.active = false;
       b.g.visible = false;
     }
+    for (const q of this.pendingBuildings) if (q.group) disposeLook(q.group);
+    this.pendingBuildings.length = 0;
     // In TEST mode, if "home" (Neo-Cyberpunk) is unchecked, start directly in an allowed era.
     let startEra = 0;
     if (this.testActive() && !this.testEras[0]) startEra = this.pickAllowedEra(-1);
@@ -1745,6 +1820,8 @@ export class Game {
   }
 
   private loop = (ts: number) => {
+    const wallDt = ts - this.lastTs; // ms, unclamped (TEST)
+    const t0 = performance.now();
     const dt = clamp((ts - this.lastTs) / 1000, 0, 0.05);
     this.lastTs = ts;
     if (this.state === 'playing') this.update(dt);
@@ -1758,6 +1835,16 @@ export class Game {
     }
     this.character?.update(dt); // keeps animating after game over too (death)
     this.render();
+    // TEST: perf accounting
+    const P = this.perf;
+    const cpu = performance.now() - t0;
+    const np = (this.renderer.info.programs?.length ?? 0);
+    if (np > P.lastProg) { this.mark(`+${np - P.lastProg} shaders`); P.lastProg = np; }
+    if (this.state === 'playing') { P.frames++; P.sumDt += wallDt; P.maxDt = Math.max(P.maxDt, wallDt); P.cpuMax = Math.max(P.cpuMax, cpu); if (wallDt > 33) P.over33++; }
+    if (this.state === 'playing' && (wallDt > 40 || cpu > 20)) { const line = `${this.elapsed.toFixed(1)}s dt ${wallDt.toFixed(0)} cpu ${cpu.toFixed(0)} | ${P.marks.join(', ') || 'no marks (gc/gpu?)'}`; P.spikes.unshift(line); if (P.spikes.length > 7) P.spikes.pop(); if (P.log.length < 600) P.log.push(line); }
+    if (this.state === 'playing') { P.sFrames++; P.sSum += wallDt; P.sMax = Math.max(P.sMax, wallDt); if (wallDt > 33) P.sOver++; if (ts > P.sumAt) { if (P.sumAt) { const a = P.sSum / Math.max(1, P.sFrames); P.log.push(`== ${this.elapsed.toFixed(0)}s avg ${(1000 / a).toFixed(0)} fps, max ${P.sMax.toFixed(0)} ms, >33ms ${P.sOver}/${P.sFrames}, shaders ${np}`); } P.sumAt = ts + 5000; P.sFrames = 0; P.sSum = 0; P.sMax = 0; P.sOver = 0; } }
+    P.marks.length = 0;
+    if (ts > P.flushAt) { P.flushAt = ts + 500; const avg = P.frames ? P.sumDt / P.frames : 0; this.onPerf?.(`fps ${avg ? (1000 / avg).toFixed(0) : '-'}  max ${P.maxDt.toFixed(0)}ms  cpu max ${P.cpuMax.toFixed(0)}ms  >33ms: ${P.over33}  shaders ${np}\n` + P.spikes.join('\n')); P.frames = 0; P.sumDt = 0; P.maxDt = 0; P.cpuMax = 0; }
     this.raf = requestAnimationFrame(this.loop);
   };
 
@@ -1848,9 +1935,12 @@ export class Game {
         this.spawnBuilding();
       }
     }
+    this.processBuildingQueue();
     for (const b of this.buildings) {
       if (!b.active) continue;
+      if (!b.g.visible) continue; // reserved, not placed yet
       b.g.position.z += move;
+      if (b.look?.tubes) b.look.tubes.visible = b.g.position.z > -90;
       if (b.panel.visible) {
         // neon flicker: mostly steady, with short random dips
         const t = this.elapsed * 9 + (b.panel.userData.flicker as number);
@@ -2197,12 +2287,14 @@ export class Game {
   }
 
   private moveLane(d: number) {
+    this.mark('lane');
     this.targetLane = clamp(this.targetLane + d, 0, 2);
     this.frozen = false;
   }
   private jump() {
     // jumps from the ground/roof OR within the grace window (coyote) after leaving the edge
     if (this.py <= this.supportY + 0.06 || this.coyoteT > 0) {
+      this.mark('jump');
       this.vy = JUMP_V;
       this.coyoteT = 0;
     }

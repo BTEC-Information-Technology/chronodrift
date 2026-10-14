@@ -101,8 +101,8 @@ export function makeFacade(
   wUnits: number,
   hUnits: number,
   rng: () => number,
-  opts: { cellScale?: number; px?: number; composite?: boolean } = {},
-): { map: THREE.CanvasTexture; emissive: THREE.CanvasTexture; neon: string } {
+  opts: { cellScale?: number; px?: number; composite?: boolean; normal?: boolean } = {},
+): { map: THREE.CanvasTexture; emissive: THREE.CanvasTexture; normal?: THREE.CanvasTexture; neon: string } {
   const cs = opts.cellScale ?? 1; // >1 = bigger cells (distant skyline)
   const pxs = opts.px ?? 1; // <1 = lower resolution
   const cols = Math.max(2, Math.round(wUnits / (0.9 * cs)));
@@ -112,6 +112,8 @@ export function makeFacade(
   const W = cols * cw, H = rows * rh;
   const [cm, m] = canvas(W, H);
   const [ce, e] = canvas(W, H);
+  const [cn, n] = opts.normal ? canvas(W, H) : [null, null];
+  if (n) { n.fillStyle = '#8080ff'; n.fillRect(0, 0, W, H); }
   const base = ['#0d1430', '#1b1234', '#0c1c38', '#101a2c'][(rng() * 4) | 0];
   m.fillStyle = base;
   m.fillRect(0, 0, W, H);
@@ -124,12 +126,19 @@ export function makeFacade(
     const y0 = r * rh;
     m.fillStyle = 'rgba(0,0,0,0.3)'; // floor band
     m.fillRect(0, y0, W, Math.max(2, Math.round(rh * 0.14)));
+    if (n) { n.fillStyle = '#80b0ff'; n.fillRect(0, y0, W, 2); n.fillStyle = '#8050ff'; n.fillRect(0, y0 + 2, W, 1); } // floor ledge
     const roll = rng();
     const floorMode = roll < 0.12 ? 'dark' : roll < 0.17 ? 'office' : 'mixed';
     for (let c = 0; c < cols; c++) {
       const x = c * cw + ox, y = y0 + oy;
       m.fillStyle = '#05060f';
       m.fillRect(x, y, winW, winH);
+      if (n) { // inset window: jambs, head and sill in the normal map
+        n.fillStyle = '#c080ff'; n.fillRect(x, y, 2, winH);
+        n.fillStyle = '#4080ff'; n.fillRect(x + winW - 2, y, 2, winH);
+        n.fillStyle = '#80c0ff'; n.fillRect(x, y, winW, 2);
+        n.fillStyle = '#8040ff'; n.fillRect(x, y + winH - 2, winW, 2);
+      }
       const lit = floorMode === 'office' ? rng() < 0.9 : floorMode === 'dark' ? false : rng() < litP;
       if (!lit) continue;
       const tint = WINDOW_TINTS[(rng() * WINDOW_TINTS.length) | 0];
@@ -183,7 +192,9 @@ export function makeFacade(
   }
   const mt = tex(cm, false), et = tex(ce, false);
   mt.anisotropy = et.anisotropy = 4;
-  return { map: mt, emissive: et, neon };
+  let nt: THREE.CanvasTexture | undefined;
+  if (cn) { nt = new THREE.CanvasTexture(cn); nt.anisotropy = 4; }
+  return { map: mt, emissive: et, normal: nt, neon };
 }
 
 const BRANDS: [string, string][] = [

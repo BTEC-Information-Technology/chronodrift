@@ -38,7 +38,7 @@ Custom domains come from `wrangler.jsonc` (`chronodrift.fun-zone.app` and
 ## Conventions
 
 - **`BUILD` in `src/main.ts`** = the number shown on the start screen. Increment it on every
-  change so you can confirm on the phone that the new code actually loaded. (Current: **build 108**.)
+  change so you can confirm on the phone that the new code actually loaded. (Current: **build 114**.)
 - Collisions and game logic live in **logical space** (lanes `LANE_X`, `px/py`); models and
   curvature are **visual only**, so assets can be swapped in without touching gameplay.
 - Commit messages are written in **English**.
@@ -55,6 +55,9 @@ Custom domains come from `wrangler.jsonc` (`chronodrift.fun-zone.app` and
 - `neonTrim.ts` — the neon lines as geometry: tubes sampled on the suit surface at bind pose and
   attached to the bones (legs, arms, chest V, back lines, belt, visor, helmet crest).
 - `tokens.ts` — pickup token looks per era (`buildToken`, `animateToken`).
+- `city.ts` — street relief: road curbs/posts/drains (`buildRoadRelief`), building socle with a random
+  frontage from a catalogue of 10 shopfronts + 10 gates (`buildSocle`), body + setback tower + parapets +
+  neon tubes (`buildUpper`).
 - `obstacles.ts` — procedural obstacle looks (block / overhead / wall) and `buildTrain`: the maglev
   locomotive + wagons (one rounded profile swept along the length, wedge nose, windows, neon rails,
   red end bars, headlight, pads). Every colour/light comes from a `TrainMats` set, so other eras can
@@ -115,6 +118,15 @@ Custom domains come from `wrangler.jsonc` (`chronodrift.fun-zone.app` and
   are painted into the facade texture (geometry bars flickered at distance).
 - **Stars:** round shader points (`makeStarMaterial`), sizes vary, brightness follows size (0.88..1.0), no
   twinkle of their own; full sphere (visible below the horizon through the Unknown Future void).
+- **Street relief (build 109):** curbs carrying the neon tubes, dashed lane marks, railing posts, drains;
+  buildings with a wider socle (random gate + shopfronts facing the road, neon in the building's colour),
+  main body + setback tower, parapets, inset windows via a normal map painted with the facade, neon tubes
+  as geometry only within 90 m (the painted frame covers the distance).
+- **Performance (builds 110-114, measured on a phone with `?perf=1`):** pixel ratio capped at 1.5, MSAA 2x,
+  bloom mips at half resolution (GPU was the main limit: 40 → 60 fps); train looks built once per integer
+  length at startup and cloned; building placement queued and split over three frames (textures, socle +
+  frontage, upper part); plain boxes for thin parts, indexed merges; every shader compiled on the start
+  screen (`warmUp`). `?perf=1` shows the frame-time overlay and a Copy perf log button on game over.
 - **Tokens (build 107, `tokens.ts`):** one look per era — hourglass coin (Neo), glass hourglass (Prehistoric),
   crystal shard (Ancient), clock gear (Solarpunk), gyroscope orb (Unknown Future); neon in the era's core
   colour, coin-style spin plus orbiting rings.
