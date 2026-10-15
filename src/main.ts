@@ -3,7 +3,7 @@ import { Game, setBuildTag } from './game/Game';
 import { loadSettings, saveSettings, DIFFICULTY_PRESETS } from './game/settings';
 
 // Bump the number on every change → on the phone you can confirm the new code has loaded.
-const BUILD = 119;
+const BUILD = 121;
 const verEl = document.getElementById('ver');
 if (verEl) verEl.textContent = `build ${BUILD}`;
 

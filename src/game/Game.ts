@@ -42,6 +42,7 @@ import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPa
 import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
 import { makeCityEnvMap, makeStarMaterial, makeAsphaltTexture } from './cyber';
 import { buildToken, animateToken, TOKEN_BY_ERA, type TokenMats } from './tokens';
+import { SpaceSky, CosmicDust, buildVoidRoad, makeNebulaTexture, type VoidRoadMats } from './space';
 import { buildSocle, buildUpper, disposeLook, buildRoadRelief, makeInteriorTexture, INTERIOR_KINDS, SOCLE_H, type CityMats, type BuildingLook, type BuildingSpec } from './city';
 import type { Settings } from './settings';
 
@@ -204,12 +205,14 @@ export class Game {
   private railGlowR!: THREE.MeshBasicMaterial;
   private lineMat!: THREE.MeshStandardMaterial;
   private fog!: THREE.Fog;
-  private skyUniforms!: { uTop: { value: THREE.Color }; uHorizon: { value: THREE.Color } };
+  private skyUniforms!: { uTop: { value: THREE.Color }; uHorizon: { value: THREE.Color }; uNebula: { value: number }; uNebTex: { value: THREE.Texture } };
   private starMat!: THREE.ShaderMaterial; // round stars with a bright core and a real per-star twinkle (see makeStarMaterial)
   private skyGroup!: THREE.Group; // sky + stars (turns with the curve)
-  private planetGroup!: THREE.Group; // planet fragments (Unknown Future only)
-  private planetMat!: THREE.MeshStandardMaterial;
-  private planets: THREE.Mesh[] = [];
+  private space!: SpaceSky; // Unknown Future bodies (built once, composed at every entry)
+  private dust!: CosmicDust; // cosmic dust drifting past the player (Unknown Future)
+  private voidMats!: VoidRoadMats;
+  private roadReliefs: THREE.Group[] = []; // city curbs/posts per track segment (hidden in Unknown Future)
+  private voidRoads: THREE.Group[] = []; // floating tubes per segment (Unknown Future only)
 
   // Ambient: pterodactyl (silhouette) + temporary rain
   private pteroGroup!: THREE.Group;
@@ -464,6 +467,9 @@ export class Game {
       interiors,
     };
     this.extraCurveMats.push(this.cityMats.concrete, this.cityMats.warm, this.cityMats.glassSheen, this.cityMats.hazardY, this.cityMats.hazardK, ...Object.values(interiors).flat());
+    // Unknown Future road: emitters holding the floating tubes
+    this.voidMats = { railL: null as unknown as THREE.Material, railR: null as unknown as THREE.Material, emitter: new THREE.MeshStandardMaterial({ color: 0x23234a, roughness: 0.5, metalness: 0.5, emissive: 0x8ad8ff, emissiveIntensity: 0.4 }) };
+    this.extraCurveMats.push(this.voidMats.emitter);
     this.trainBlockMat = this.emissiveMat(TRAIN_BLOCK_COLOR, 0.4, true);
     this.trainRideMat = this.emissiveMat(TRAIN_RIDE_COLOR, 0.5, true);
     // Lush vegetation (Prehistoric) and damaged metal debris (Ancient) on the train.
@@ -514,9 +520,17 @@ export class Game {
     const rainVis = this.rain.group.visible, portalVis = this.portal.fx.group.visible;
     this.rain.group.visible = true;
     this.portal.fx.group.visible = true;
+    this.space.group.visible = true;
+    this.space.setAllVisible(true);
+    this.dust.points.visible = true;
+    for (const v of this.voidRoads) v.visible = true;
     this.renderer.compile(this.scene, this.camera); // every material in the scene, frustum or not
     this.rain.group.visible = rainVis;
     this.portal.fx.group.visible = portalVis;
+    this.space.setAllVisible(false);
+    this.space.group.visible = false;
+    this.dust.points.visible = false;
+    for (const v of this.voidRoads) v.visible = false;
     if (b0) b0.panel.visible = false;
     for (const t of trains) warm.remove(t);
     warm.traverse((o) => { const m = o as THREE.Mesh; if (m.isMesh) m.geometry.dispose(); });
@@ -609,8 +623,9 @@ export class Game {
     // Semi-transparent road (void below) + planet fragments — Unknown Future only
     this.groundMat.opacity = lerp(from.groundOpacity, to.groundOpacity, mix);
     this.groundMat.transparent = this.groundMat.opacity < 0.99;
-    this.planetMat.opacity = lerp(from.planetOpacity, to.planetOpacity, mix);
-    this.planetGroup.visible = this.planetMat.opacity > 0.01;
+    const pv = lerp(from.planetOpacity, to.planetOpacity, mix);
+    this.space.group.visible = pv > 0.5;
+    this.skyUniforms.uNebula.value = pv;
   }
 
   /** The era die (1..30): Prehistoric/Ancient/Solarpunk ~6.7% each, Unknown Future ~3.3% (rarer). */
@@ -641,6 +656,7 @@ export class Game {
   /** Opens a portal ahead towards era `target`; the switch happens when passing through it. */
   private openPortal(target: number) {
     this.mark('portal');
+    if (target === 4) this.space.compose(Math.random); // a fresh sky for every visit
     // If leaving Cyberpunk → clear the city BEYOND the portal (the new era starts there).
     if (this.era === 0 && target !== 0) {
       for (const q of this.pendingBuildings) { q.b.active = false; q.b.g.visible = false; if (q.group) disposeLook(q.group); } // not built yet → just released
@@ -673,6 +689,8 @@ export class Game {
     this.skyUniforms = {
       uTop: { value: new THREE.Color(ERAS[0].skyTop) },
       uHorizon: { value: new THREE.Color(ERAS[0].skyHorizon) },
+      uNebula: { value: 0 }, // Unknown Future: nebula strength (follows planetOpacity)
+      uNebTex: { value: makeNebulaTexture(Math.random) },
     };
     const skyMat = new THREE.ShaderMaterial({
       side: THREE.BackSide,
@@ -680,9 +698,11 @@ export class Game {
       fog: false,
       uniforms: this.skyUniforms,
       vertexShader: `varying vec3 vPos; void main(){ vPos = position; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
-      fragmentShader: `uniform vec3 uTop; uniform vec3 uHorizon; varying vec3 vPos;
-        void main(){ float h = normalize(vPos).y; float t = clamp(h * 0.5 + 0.5, 0.0, 1.0);
-        gl_FragColor = vec4(mix(uHorizon, uTop, smoothstep(0.5, 0.72, t)), 1.0); }`,
+      fragmentShader: `uniform vec3 uTop; uniform vec3 uHorizon; uniform float uNebula; uniform sampler2D uNebTex; varying vec3 vPos;
+        void main(){ vec3 d = normalize(vPos); float h = d.y; float t = clamp(h * 0.5 + 0.5, 0.0, 1.0);
+        vec3 c = mix(uHorizon, uTop, smoothstep(0.5, 0.72, t));
+        if (uNebula > 0.001) { vec2 uv = vec2(0.5 + atan(d.z, d.x) / 6.2832, 0.5 - asin(h) / 3.1416); c += texture2D(uNebTex, uv).rgb * uNebula; }
+        gl_FragColor = vec4(c, 1.0); }`,
     });
     const sky = new THREE.Mesh(new THREE.SphereGeometry(300, 32, 16), skyMat);
     sky.renderOrder = -2;
@@ -711,34 +731,11 @@ export class Game {
     stars.renderOrder = -1;
     this.skyGroup.add(stars);
 
-    // Drifting planet fragments (visible only in Unknown Future)
-    this.planetGroup = new THREE.Group();
-    this.planetGroup.visible = false;
-    this.skyGroup.add(this.planetGroup);
-    this.planetMat = new THREE.MeshStandardMaterial({
-      color: 0x1a2340,
-      emissive: 0x4a6aff,
-      emissiveIntensity: 0.35,
-      roughness: 0.85,
-      flatShading: true,
-      transparent: true,
-      opacity: 0,
-      fog: false,
-    });
-    const defs = [
-      { r: 22, x: -30, y: 52, z: -120 }, // top-left, large
-      { r: 13, x: 42, y: 60, z: -130 }, // top-right
-      { r: 9, x: 6, y: 42, z: -98 }, // top-centre, small
-      { r: 24, x: 20, y: -28, z: -125 }, // bottom (through the void), large
-      { r: 11, x: -34, y: -20, z: -100 }, // bottom-left (through the void)
-    ];
-    for (const d of defs) {
-      const m = new THREE.Mesh(new THREE.IcosahedronGeometry(d.r, 1), this.planetMat);
-      m.position.set(d.x, d.y, d.z);
-      m.userData.base = { x: d.x, y: d.y, z: d.z };
-      this.planetGroup.add(m);
-      this.planets.push(m);
-    }
+    // Unknown Future sky: the six bodies, built once here (start screen), composed at every entry into the era
+    this.space = new SpaceSky();
+    this.space.build(Math.random);
+    this.space.group.visible = false;
+    this.skyGroup.add(this.space.group);
   }
 
   /** Ambient elements: pterodactyl (silhouette) + temporary rain. */
@@ -761,6 +758,9 @@ export class Game {
 
     // Rain — streaks around the player + splashes on the road (see rain.ts)
     this.rain = new Rain(900, Math.random);
+    this.dust = new CosmicDust();
+    this.scene.add(this.dust.points);
+    this.extraCurveMats.push(this.dust.points.material as THREE.Material);
     this.scene.add(this.rain.group);
   }
 
@@ -1384,6 +1384,10 @@ export class Game {
     if (showTerrain) this.terrainMat.color.setHex(this.era === 1 ? 0x18301a : this.era === 2 ? 0x3a3122 : 0x163a1e);
     for (const t of this.terrains) t.visible = showTerrain;
     for (const f of this.floors) f.visible = this.era === 0 && !showTerrain;
+    const voidEra = this.era === 4;
+    for (const r of this.roadReliefs) r.visible = !voidEra;
+    for (const v of this.voidRoads) v.visible = voidEra;
+    this.dust.points.visible = voidEra;
     if (this.megaGroup.visible) {
       // the dinosaurs bend down now and then to eat
       for (let i = 0; i < this.dinoNecks.length; i++) {
@@ -1406,6 +1410,7 @@ export class Game {
     if (prevRain < 0.01 && this.rainLevel >= 0.01) this.mark('rain on');
     if (prevRain >= 0.01 && this.rainLevel < 0.01) this.mark('rain off');
     this.rain.update(dt, this.camX, this.rainLevel, Math.random);
+    if (this.dust.points.visible) this.dust.update(this.speed * dt);
 
   }
 
@@ -1422,6 +1427,8 @@ export class Game {
     this.railGlowL = glowMat(0x00eaff);
     this.railGlowR = glowMat(0xff36c8);
     this.extraCurveMats.push(this.railGlowL, this.railGlowR);
+    this.voidMats.railL = this.railLMat;
+    this.voidMats.railR = this.railRMat;
     const glowGeo = new THREE.PlaneGeometry(0.6, SEGMENT_LEN);
     glowGeo.rotateX(-Math.PI / 2);
     this.lineMat = this.emissiveMat(0x3344aa, 0.8);
@@ -1450,7 +1457,13 @@ export class Game {
       ground.position.y = -0.25;
       g.add(ground);
       // road relief: curbs with the neon tubes, posts with lights, drains, dashed lane marks, a seam
-      g.add(buildRoadRelief(SEGMENT_LEN, TRACK_HALF_W, { concrete: this.cityMats.concrete, dark: this.cityMats.dark, white: this.cityMats.white, railL: this.railLMat, railR: this.railRMat, line: this.lineMat }));
+      const relief = buildRoadRelief(SEGMENT_LEN, TRACK_HALF_W, { concrete: this.cityMats.concrete, dark: this.cityMats.dark, white: this.cityMats.white, railL: this.railLMat, railR: this.railRMat, line: this.lineMat });
+      g.add(relief);
+      this.roadReliefs.push(relief);
+      const vr = buildVoidRoad(SEGMENT_LEN, TRACK_HALF_W, this.voidMats);
+      vr.visible = false;
+      g.add(vr);
+      this.voidRoads.push(vr);
       const gl = new THREE.Mesh(glowGeo, this.railGlowL);
       gl.position.set(-(TRACK_HALF_W - 0.2), 0.012, 0);
       g.add(gl);
@@ -1807,6 +1820,7 @@ export class Game {
     let startEra = 0;
     if (this.testActive() && !this.testEras[0]) startEra = this.pickAllowedEra(-1);
     this.era = startEra;
+    if (startEra === 4) this.space.compose(Math.random);
     this.trans = null;
     this.deathT = 0;
     this.coreCombo = 0;
@@ -1929,17 +1943,7 @@ export class Game {
     this.curveUniform.value.set(this.curK / 2, uy); // horizontal render offset = κ/2 · dist²
     // The sky rotates with the accumulated heading — still on straights, rotates exactly by the angle on arcs.
     this.skyGroup.rotation.y = -this.heading * SKY_YAW_GAIN;
-    // Slow drift of the planet fragments (Unknown Future): rotation + floating
-    if (this.planetGroup.visible) {
-      for (let i = 0; i < this.planets.length; i++) {
-        const p = this.planets[i];
-        p.rotation.y += dt * 0.05;
-        p.rotation.x += dt * 0.02;
-        const b = p.userData.base as { x: number; y: number; z: number };
-        p.position.x = b.x + Math.sin(this.elapsed * 0.05 + i) * 5;
-        p.position.y = b.y + Math.cos(this.elapsed * 0.04 + i * 1.3) * 3;
-      }
-    }
+    if (this.space.group.visible) this.space.update(dt, this.elapsed, this.camera.position);
 
     // Invulnerability ends as soon as the world runs again and the player is clear of the obstacle.
     if (this.invuln && !this.frozen && this.resumeGrace <= 0 && !this.overlapNow) {
