@@ -38,7 +38,7 @@ Custom domains come from `wrangler.jsonc` (`chronodrift.fun-zone.app` and
 ## Conventions
 
 - **`BUILD` in `src/main.ts`** = the number shown on the start screen. Increment it on every
-  change so you can confirm on the phone that the new code actually loaded. (Current: **build 119**.)
+  change so you can confirm on the phone that the new code actually loaded. (Current: **build 121**.)
 - Collisions and game logic live in **logical space** (lanes `LANE_X`, `px/py`); models and
   curvature are **visual only**, so assets can be swapped in without touching gameplay.
 - Commit messages are written in **English**.
@@ -62,6 +62,10 @@ Custom domains come from `wrangler.jsonc` (`chronodrift.fun-zone.app` and
   locomotive + wagons (one rounded profile swept along the length, wedge nose, windows, neon rails,
   red end bars, headlight, pads). Every colour/light comes from a `TrainMats` set, so other eras can
   pass unlit, sun-lit materials over the same geometry.
+- `space.ts` — Unknown Future: the six sky bodies (broken planet, dying sun, ringed giant with nuclear
+  explosions, shattered world, dead moon, lone rocks; canvas textures + fbm shaders), `SpaceSky` (built once,
+  composed at every entry), nebula dome texture, `buildVoidRoad` (floating light tubes instead of curbs),
+  `CosmicDust`.
 - `neon-outlaw.clips.json` — per-clip airborne window (take-off / landing), generated with the model.
 - `rng.ts` / `math.ts` / `types.ts` — utilities (seeded mulberry32, lerp/damp, types).
 - `public/models/neon-outlaw.glb` — the Neon Outlaw (799 KB): mesh + rig generated with Meshy from
@@ -149,9 +153,12 @@ Custom domains come from `wrangler.jsonc` (`chronodrift.fun-zone.app` and
 - **Curvature as real circular arcs:** the road is a sequence of straights + arcs (random radius)
   with smooth transitions; **the sky rotates with the cumulative heading** (tangent) — steady on
   straights, turning on arcs, no wobble.
-- **Era 5 — Unknown Future** (showcase): space sky + stars, **semi-transparent road** over the
-  void (opaque lane lines), **drifting planet fragments** (placeholder icosahedra). The rarest
-  excursion.
+- **Era 5 — Unknown Future** (showcase, build 120-121): space sky + stars + nebula, **semi-transparent road**
+  over the void (opaque lane lines), city curbs/posts replaced by floating light tubes held by emitters,
+  cosmic dust drifting past. Sky composed afresh at every entry: 2 of the 4 feature bodies in the
+  phone-visible zone (azimuth ±12°, one above and one below the horizon, seen through the glass road),
+  1-2 dead moons anywhere, 32 lone rocks over the whole sphere (never closer than 100 units). No energy
+  filaments under the glass (they confused the player). The rarest excursion.
 
 ## Active TEST values (restore to normal before release)
 
