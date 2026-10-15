@@ -21,8 +21,8 @@ npm run test         # vitest (rng, math, difficulty)
 
 ## Deploy
 
-Deploys run **automatically through Cloudflare Workers Builds** on every push to `main`
-(root directory `/`, build command `npm run build`, deploy command `npx wrangler deploy`).
+Deploys are done **manually with wrangler** from the terminal after a local test: `npm run build`, then
+`npx wrangler deploy` with `CLOUDFLARE_API_TOKEN` set in the shell (no Cloudflare Workers Build is connected).
 
 Manual deploy:
 
