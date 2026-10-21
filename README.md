@@ -38,7 +38,7 @@ Custom domains come from `wrangler.jsonc` (`chronodrift.fun-zone.app` and
 ## Conventions
 
 - **`BUILD` in `src/main.ts`** = the number shown on the start screen. Increment it on every
-  change so you can confirm on the phone that the new code actually loaded. (Current: **build 123**.)
+  change so you can confirm on the phone that the new code actually loaded. (Current: **build 124**.)
 - Collisions and game logic live in **logical space** (lanes `LANE_X`, `px/py`); models and
   curvature are **visual only**, so assets can be swapped in without touching gameplay.
 - Commit messages are written in **English**.
@@ -69,6 +69,9 @@ Custom domains come from `wrangler.jsonc` (`chronodrift.fun-zone.app` and
 - `ruins.ts` — Unknown Future side scenery: the city's block (`buildSocle` + the same parapets/tubes) with
   every light out (`makeFacade` `dead` option), broken in two along a noise cut surface at 20-80 % of the
   height (`buildRuin`: walls, recessed broken-concrete caps, rebar; the two pieces fit exactly).
+- `voidObstacles.ts` — Unknown Future obstacle looks: a settled boulder (jump), an elongated green-cracked boulder
+  rolling across the road (slide), a big chunk of the dying sun smashed into the glass road with an impact-crack
+  decal (lane change). The crust shader is `makeCrackMaterial` in `space.ts` (shared with the dying sun).
 - `neon-outlaw.clips.json` — per-clip airborne window (take-off / landing), generated with the model.
 - `rng.ts` / `math.ts` / `types.ts` — utilities (seeded mulberry32, lerp/damp, types).
 - `public/models/neon-outlaw.glb` — the Neon Outlaw (799 KB): mesh + rig generated with Meshy from
@@ -164,7 +167,9 @@ Custom domains come from `wrangler.jsonc` (`chronodrift.fun-zone.app` and
   filaments under the glass (they confused the player). Side scenery (build 122-123): dead Neo-Cyberpunk
   blocks broken in two (`ruins.ts`), 4 variants built at start and cloned; a spawn shows the lower piece, the
   upper piece or both as a rigid tandem (1/3 each), drifting as one body (scale 0.5-0.9, tilt, slow tumble)
-  kept off the road by its bounding radius; every 26 units, alternating sides. Fragments of the other eras will follow once those eras get their final art. The rarest excursion.
+  kept off the road by its bounding radius; every 26 units, alternating sides. Obstacles (build 124,
+  `voidObstacles.ts`): pieces of the sky on the road, no chevrons (the shape reads the move); values tuned by
+  the owner: glow 0.53, scale 0.20, rim 1.94, spin 0.68. Fragments of the other eras will follow once those eras get their final art. The rarest excursion.
 
 ## Active TEST values (restore to normal before release)
 

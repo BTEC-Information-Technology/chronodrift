@@ -134,16 +134,26 @@ function brokenPlanet(R: number, rng: Rng): Body {
 }
 
 // ---------- 2. dying sun (hue -40, brightness 0.52, cracks 1.5, crust 0.7, corona 1.37, size 1.3) ----------
-function dyingSun(R: number, rng: Rng): Body {
-  const U = { uTime: { value: 0 }, uHue: { value: -40 }, uBright: { value: 0.52 }, uCrack: { value: 1.5 }, uCrust: { value: 0.7 } };
-  const mat = new THREE.ShaderMaterial({ uniforms: U, toneMapped: false, fog: false,
-    vertexShader: 'varying vec3 vN; void main(){ vN = normalize(position); gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0); }',
-    fragmentShader: `uniform float uTime, uHue, uBright, uCrack, uCrust; varying vec3 vN; ${GLSL_NOISE}
+/** Cracked-crust shader (the dying sun's skin, reused by the Unknown Future obstacles): dark crust scabs, glowing cracks that creep, a rim tint.
+ *  Unlit, HDR → bloom. `uCurve` is the game's road-curvature uniform (set by the game; zero elsewhere), `uTime` must be fed per frame. */
+export interface CrackLook { crustA: THREE.Color; crustB: THREE.Color; lava: THREE.Color; rim: THREE.Color; hue: number; bright: number; crack: number; crust: number; scale: number /* noise units per world unit: the pattern repeats every ~1/scale units */ }
+export const SUN_LOOK: CrackLook = { crustA: new THREE.Color(0.07, 0.012, 0.01), crustB: new THREE.Color(0.30, 0.05, 0.02), lava: new THREE.Color(2.0, 0.45, 0.08), rim: new THREE.Color(0.5, 0.08, 0.02), hue: -40, bright: 0.52, crack: 1.5, crust: 0.7, scale: 1 };
+export function makeCrackMaterial(look: CrackLook): THREE.ShaderMaterial {
+  const U = { uTime: { value: 0 }, uHue: { value: look.hue }, uBright: { value: look.bright }, uCrack: { value: look.crack }, uCrust: { value: look.crust }, uScale: { value: look.scale },
+    uCrustA: { value: look.crustA }, uCrustB: { value: look.crustB }, uLava: { value: look.lava }, uRim: { value: look.rim }, uCurve: { value: new THREE.Vector2(0, 0) } };
+  return new THREE.ShaderMaterial({ uniforms: U, toneMapped: false, fog: false,
+    vertexShader: `uniform vec2 uCurve; uniform float uScale; varying vec3 vN; varying vec3 vNv;
+      void main(){ vN = position * uScale; vNv = normalize(normalMatrix * normal); vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
+        float cDist = -mvPosition.z; mvPosition.x += uCurve.x * cDist * cDist; mvPosition.y += uCurve.y * cDist * cDist; gl_Position = projectionMatrix * mvPosition; }`,
+    fragmentShader: `uniform float uTime, uHue, uBright, uCrack, uCrust; uniform vec3 uCrustA, uCrustB, uLava, uRim; varying vec3 vN; varying vec3 vNv; ${GLSL_NOISE}
       void main(){ vec3 n = vN; float t = uTime * 0.05; float scab = fbm(n * 2.5 + t); float crack = fbm(n * 9.0 - t * 2.0);
         float c = smoothstep(0.52, 0.62, crack) * smoothstep(0.35, 0.6, scab) * uCrack;
-        vec3 crust = mix(vec3(0.07, 0.012, 0.01), vec3(0.30, 0.05, 0.02), scab) * (1.0 - uCrust * 0.6); vec3 lava = vec3(2.0, 0.45, 0.08);
-        vec3 col = mix(crust, lava, clamp(c, 0.0, 1.0)); float limb = pow(1.0 - abs(dot(n, vec3(0.0, 0.0, 1.0))), 2.0); col += vec3(0.5, 0.08, 0.02) * limb * 0.5;
+        vec3 crust = mix(uCrustA, uCrustB, scab) * (1.0 - uCrust * 0.6);
+        vec3 col = mix(crust, uLava, clamp(c, 0.0, 1.0)); float limb = pow(1.0 - abs(vNv.z), 2.0); col += uRim * limb * 0.5;
         col = hueShift(col, uHue) * uBright; gl_FragColor = vec4(col, 1.0); }` });
+}
+function dyingSun(R: number, rng: Rng): Body {
+  const mat = makeCrackMaterial({ ...SUN_LOOK, scale: 1 / R }); const U = mat.uniforms;
   const g = new THREE.SphereGeometry(R, 40, 28); const p = g.attributes.position, v = new THREE.Vector3(); for (let i = 0; i < p.count; i++) { v.fromBufferAttribute(p, i); const n = v.clone().normalize(); const k = 1 + (fbm3(n.x * 3, n.y * 3, n.z * 3) - 0.5) * 0.03; p.setXYZ(i, n.x * R * k, n.y * R * k, n.z * R * k); } g.computeVertexNormals();
   const group = new THREE.Group(); const sun = mesh(g, mat); group.add(sun);
   const corona = new THREE.Sprite(new THREE.SpriteMaterial({ map: haloTexture('rgba(255,90,30,0.6)', 'rgba(200,50,20,0.22)', 'rgba(120,20,10,0)'), transparent: true, blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false, fog: false })); corona.scale.setScalar(R * 3.2); group.add(corona);
@@ -243,10 +253,19 @@ const SHAPES: ((n: THREE.Vector3) => number)[] = [
   (n) => 1 / Math.max(Math.abs(n.x) / 1.05, Math.abs(n.y) / 0.9, Math.abs(n.z) / 0.95, Math.hypot(n.x, n.y, n.z) * 0.92),
   (n) => 1 / Math.max(Math.abs(n.x) / 1.4, Math.abs(n.y) / 0.45, Math.abs(n.z) / 1.0, Math.hypot(n.x, n.y, n.z) * 0.8),
 ];
-function loneRock(shape: number, r: number, off: number): Body {
-  const g = new THREE.SphereGeometry(r, 40, 28); const p = g.attributes.position, uv = g.attributes.uv; const v = new THREE.Vector3(); const K = 1.75;
+/** asteroid geometry: one of the 6 shapes, radius r, noise offset off (also used by the Unknown Future obstacles) */
+export function rockGeometry(shape: number, r: number, off: number, segs = 40): THREE.BufferGeometry {
+  const g = new THREE.SphereGeometry(r, segs, Math.round(segs * 0.7)); const p = g.attributes.position, uv = g.attributes.uv; const v = new THREE.Vector3(); const K = 1.75;
   for (let i = 0; i < p.count; i++) { v.fromBufferAttribute(p, i); const n = v.clone().normalize(); let k = SHAPES[shape](n); k *= 1 + (fbm3(n.x * 2.2 + off, n.y * 2.2, n.z * 2.2, 3) - 0.5) * 0.45 * K + (fbm3(n.x * 6 + off * 2, n.y * 6, n.z * 6, 2) - 0.5) * 0.12 * K; p.setXYZ(i, n.x * r * k, n.y * r * k, n.z * r * k); uv.setXY(i, uv.getX(i) * 2, uv.getY(i)); }
-  g.computeVertexNormals(); const m = mesh(g, rockMat); const group = new THREE.Group(); group.add(m);
+  g.computeVertexNormals(); return g;
+}
+/** the approved loose-rock material (hue 6, brightness 1.52), fog off: for the sky; with fog for things near the road */
+export function makeRockMaterial(rng: Rng, fog = false): THREE.MeshStandardMaterial {
+  const rockTex = rockTexture(rng); const base = new THREE.Color(0x4a5078); const hsl = { h: 0, s: 0, l: 0 }; base.getHSL(hsl);
+  return new THREE.MeshStandardMaterial({ color: new THREE.Color().setHSL((hsl.h + 6 / 360) % 1, hsl.s, Math.min(1, hsl.l * 1.52)), roughness: 1, metalness: 0, map: rockTex, bumpMap: rockTex, bumpScale: 0.25, fog });
+}
+function loneRock(shape: number, r: number, off: number): Body {
+  const m = mesh(rockGeometry(shape, r, off), rockMat); const group = new THREE.Group(); group.add(m);
   const spin = new THREE.Vector3(Math.random() - 0.5, Math.random() - 0.5, Math.random() - 0.5).multiplyScalar(0.12);
   return { group, radius: r, update: (dt) => { m.rotation.x += spin.x * dt; m.rotation.y += spin.y * dt; m.rotation.z += spin.z * dt; } };
 }
@@ -263,8 +282,7 @@ export class SpaceSky {
   /** builds everything (call once, on the start screen) */
   build(rng: Rng) {
     dotTex = dotTexture();
-    const rockTex = rockTexture(rng); const base = new THREE.Color(0x4a5078); const hsl = { h: 0, s: 0, l: 0 }; base.getHSL(hsl);
-    rockMat = new THREE.MeshStandardMaterial({ color: new THREE.Color().setHSL((hsl.h + 6 / 360) % 1, hsl.s, Math.min(1, hsl.l * 1.52)), roughness: 1, metalness: 0, map: rockTex, bumpMap: rockTex, bumpScale: 0.25, fog: false });
+    rockMat = makeRockMaterial(rng);
     rubbleMat = new THREE.MeshStandardMaterial({ color: 0x2e3452, emissive: 0x0c1024, emissiveIntensity: 0.6, roughness: 0.95, flatShading: true, fog: false });
     this.bodies = [brokenPlanet(22, rng), dyingSun(26 * 1.3, rng), ringedGiant(20, rng), shatteredWorld(14, rng)];
     this.moons = [deadMoon(10, rng), deadMoon(10, rng)];

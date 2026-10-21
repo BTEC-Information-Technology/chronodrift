@@ -19,31 +19,32 @@ export interface ObstacleMats {
   white: THREE.Material; // small white lights
 }
 
-type Part<K extends string> = { geo: THREE.BufferGeometry; mat: K };
+export type Part<K extends string> = { geo: THREE.BufferGeometry; mat: K };
 
-const rbox = (w: number, h: number, d: number, r = 0.06, seg = 2) => new RoundedBoxGeometry(w, h, d, seg, r);
+export const rbox = (w: number, h: number, d: number, r = 0.06, seg = 2) => new RoundedBoxGeometry(w, h, d, seg, r);
 
-function place<K extends string>(parts: Part<K>[], geo: THREE.BufferGeometry, mat: K, x: number, y: number, z: number, rz = 0): void {
+export function place<K extends string>(parts: Part<K>[], geo: THREE.BufferGeometry, mat: K, x: number, y: number, z: number, rz = 0): void {
   if (rz) geo.rotateZ(rz);
   geo.translate(x, y, z);
   parts.push({ geo, mat });
 }
 
 /** Continuous chevron: two bars whose inner ends meet at the apex (slightly overlapping) + a round knuckle. */
-function chevron<K extends string>(parts: Part<K>[], mat: K, x: number, apexY: number, z: number, L: number, a: number, up: boolean, t = 0.07): void {
+export function chevron<K extends string>(parts: Part<K>[], mat: K, x: number, apexY: number, z: number, L: number, a: number, up: boolean, t = 0.07): void {
   const dy = up ? -1 : 1;
   for (const sx of [-1, 1]) place(parts, rbox(L + t, t, 0.03, t * 0.45, 1), mat, x + sx * (L / 2) * Math.cos(a), apexY + dy * (L / 2) * Math.sin(a), z, sx * dy * a);
   place(parts, new THREE.CylinderGeometry(t * 0.5, t * 0.5, 0.03, 10).rotateX(Math.PI / 2), mat, x, apexY, z);
 }
 
-/** Merges the parts per material into one mesh each (position + normal only; smooth normals survive). */
-function assemble<K extends string>(parts: Part<K>[], mats: Record<K, THREE.Material>, keys: readonly K[]): THREE.Group {
+/** Merges the parts per material into one mesh each (position + normal + uv; smooth normals survive). */
+export function assemble<K extends string>(parts: Part<K>[], mats: Record<K, THREE.Material>, keys: readonly K[]): THREE.Group {
   const group = new THREE.Group();
   for (const key of keys) {
     const raw = parts.filter((p) => p.mat === key).map((p) => p.geo);
     if (!raw.length) continue;
     const geos = raw.map((g) => {
-      for (const name of Object.keys(g.attributes)) if (name !== 'position' && name !== 'normal') g.deleteAttribute(name);
+      for (const name of Object.keys(g.attributes)) if (name !== 'position' && name !== 'normal' && name !== 'uv') g.deleteAttribute(name);
+      if (!g.attributes.uv) g.setAttribute('uv', new THREE.Float32BufferAttribute(new Float32Array(g.attributes.position.count * 2), 2));
       if (!g.index) { const n = g.attributes.position.count; const idx = new Uint32Array(n); for (let i = 0; i < n; i++) idx[i] = i; g.setIndex(new THREE.BufferAttribute(idx, 1)); }
       return g;
     });
