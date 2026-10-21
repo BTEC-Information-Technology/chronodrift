@@ -38,7 +38,7 @@ Custom domains come from `wrangler.jsonc` (`chronodrift.fun-zone.app` and
 ## Conventions
 
 - **`BUILD` in `src/main.ts`** = the number shown on the start screen. Increment it on every
-  change so you can confirm on the phone that the new code actually loaded. (Current: **build 121**.)
+  change so you can confirm on the phone that the new code actually loaded. (Current: **build 123**.)
 - Collisions and game logic live in **logical space** (lanes `LANE_X`, `px/py`); models and
   curvature are **visual only**, so assets can be swapped in without touching gameplay.
 - Commit messages are written in **English**.
@@ -66,6 +66,9 @@ Custom domains come from `wrangler.jsonc` (`chronodrift.fun-zone.app` and
   explosions, shattered world, dead moon, lone rocks; canvas textures + fbm shaders), `SpaceSky` (built once,
   composed at every entry), nebula dome texture, `buildVoidRoad` (floating light tubes instead of curbs),
   `CosmicDust`.
+- `ruins.ts` — Unknown Future side scenery: the city's block (`buildSocle` + the same parapets/tubes) with
+  every light out (`makeFacade` `dead` option), broken in two along a noise cut surface at 20-80 % of the
+  height (`buildRuin`: walls, recessed broken-concrete caps, rebar; the two pieces fit exactly).
 - `neon-outlaw.clips.json` — per-clip airborne window (take-off / landing), generated with the model.
 - `rng.ts` / `math.ts` / `types.ts` — utilities (seeded mulberry32, lerp/damp, types).
 - `public/models/neon-outlaw.glb` — the Neon Outlaw (799 KB): mesh + rig generated with Meshy from
@@ -158,7 +161,10 @@ Custom domains come from `wrangler.jsonc` (`chronodrift.fun-zone.app` and
   cosmic dust drifting past. Sky composed afresh at every entry: 2 of the 4 feature bodies in the
   phone-visible zone (azimuth ±12°, one above and one below the horizon, seen through the glass road),
   1-2 dead moons anywhere, 32 lone rocks over the whole sphere (never closer than 100 units). No energy
-  filaments under the glass (they confused the player). The rarest excursion.
+  filaments under the glass (they confused the player). Side scenery (build 122-123): dead Neo-Cyberpunk
+  blocks broken in two (`ruins.ts`), 4 variants built at start and cloned; a spawn shows the lower piece, the
+  upper piece or both as a rigid tandem (1/3 each), drifting as one body (scale 0.5-0.9, tilt, slow tumble)
+  kept off the road by its bounding radius; every 26 units, alternating sides. Fragments of the other eras will follow once those eras get their final art. The rarest excursion.
 
 ## Active TEST values (restore to normal before release)
 
@@ -198,7 +204,18 @@ Custom domains come from `wrangler.jsonc` (`chronodrift.fun-zone.app` and
    to the chest (no library/text-to-motion clip was convincing; Mixamo refused the rigged upload),
    smoothing of the leg lines at the knee, a flat visor band instead of a tube.
 4. Normalise the test values; possibly badges at coin/score thresholds.
-5. Later: leaderboard (Cloudflare Worker + D1) — **a single global ranking** (harder = more
+5. **Solidity polish** (noted 2026-10-21, after the world is finished):
+   - obstacles: the character's feet (animation) are not the physics box, so a borderline jump or a slide
+     visibly enters a block; fix = a slightly larger logical box + the "cleared" test on the model's feet,
+     a swept z test per frame (30 fps at high speed can skip the first contact), and landing on top of a
+     block pushing the player onto it instead of sinking;
+   - side scenery over the road: pieces are placed at `innerX` 4.8-11.8 with a random yaw, so wide hedges,
+     boulder groups or tilted monoliths protrude over the outer lane and the player runs through them;
+     fix = one `Box3` per spawn and push the piece out until its inner edge is >= 4.2 (things meant to
+     hang over the road, crowns/signs, need a minimum height instead). The ruins already apply this rule
+     with their bounding radius;
+   - drifting pieces must never cross each other: rigid ensemble + per-piece wobble only (the ruins do this).
+6. Later: leaderboard (Cloudflare Worker + D1) — **a single global ranking** (harder = more
    points); deterministic ghost; monetisation (billboards + interstitial + rewarded).
 
 ## Decisions (confirmed with the owner)
