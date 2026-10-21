@@ -101,9 +101,10 @@ export function makeFacade(
   wUnits: number,
   hUnits: number,
   rng: () => number,
-  opts: { cellScale?: number; px?: number; composite?: boolean; normal?: boolean } = {},
+  opts: { cellScale?: number; px?: number; composite?: boolean; normal?: boolean; dead?: boolean } = {},
 ): { map: THREE.CanvasTexture; emissive: THREE.CanvasTexture; normal?: THREE.CanvasTexture; neon: string } {
   const cs = opts.cellScale ?? 1; // >1 = bigger cells (distant skyline)
+  const DEAD = '#1e2129'; // dead facade (Unknown Future ruins): the tubes painted as dark glass, nothing lit
   const pxs = opts.px ?? 1; // <1 = lower resolution
   const cols = Math.max(2, Math.round(wUnits / (0.9 * cs)));
   const rows = Math.max(4, Math.round(hUnits / (1.4 * cs)));
@@ -119,7 +120,8 @@ export function makeFacade(
   m.fillRect(0, 0, W, H);
   e.fillStyle = '#000';
   e.fillRect(0, 0, W, H);
-  const litP = 0.2 + rng() * 0.15;
+  const litP = opts.dead ? 0 : 0.2 + rng() * 0.15;
+  const paint = opts.dead ? [m] : [m, e]; // where the neon goes
   const winW = Math.round(cw * 0.55), winH = Math.round(rh * 0.62);
   const ox = Math.round((cw - winW) / 2), oy = Math.round((rh - winH) * 0.55);
   for (let r = 0; r < rows; r++) {
@@ -139,7 +141,7 @@ export function makeFacade(
         n.fillStyle = '#80c0ff'; n.fillRect(x, y, winW, 2);
         n.fillStyle = '#8040ff'; n.fillRect(x, y + winH - 2, winW, 2);
       }
-      const lit = floorMode === 'office' ? rng() < 0.9 : floorMode === 'dark' ? false : rng() < litP;
+      const lit = opts.dead ? false : floorMode === 'office' ? rng() < 0.9 : floorMode === 'dark' ? false : rng() < litP;
       if (!lit) continue;
       const tint = WINDOW_TINTS[(rng() * WINDOW_TINTS.length) | 0];
       const a = floorMode === 'office' ? 0.55 : 0.3 + rng() * 0.4;
@@ -161,8 +163,8 @@ export function makeFacade(
   for (let i = 0; i < nStrips; i++) {
     const r = (rng() * rows) | 0;
     const y = r * rh;
-    for (const ctx of [m, e]) {
-      ctx.fillStyle = neon;
+    for (const ctx of paint) {
+      ctx.fillStyle = opts.dead ? DEAD : neon;
       ctx.fillRect(0, y, W, Math.max(2, Math.round(rh * 0.16)));
     }
   }
@@ -180,11 +182,13 @@ export function makeFacade(
       ctx.fillRect(vertical ? x0 : 0, vertical ? 0 : y0, vertical ? x1 - x0 : W, vertical ? H : y1 - y0);
       void gw;
     };
-    for (const ctx of [m, e]) {
-      glow(ctx, -bw * 2, 0, bw * 4, 0, bw, true);
-      glow(ctx, W - bw * 4, 0, W + bw * 2, 0, bw, true);
-      glow(ctx, 0, -bh * 2, 0, bh * 4, bh, false);
-      ctx.fillStyle = neon;
+    for (const ctx of paint) {
+      if (!opts.dead) {
+        glow(ctx, -bw * 2, 0, bw * 4, 0, bw, true);
+        glow(ctx, W - bw * 4, 0, W + bw * 2, 0, bw, true);
+        glow(ctx, 0, -bh * 2, 0, bh * 4, bh, false);
+      }
+      ctx.fillStyle = opts.dead ? DEAD : neon;
       ctx.fillRect(0, 0, bw, H);
       ctx.fillRect(W - bw, 0, bw, H);
       ctx.fillRect(0, 0, W, bh);

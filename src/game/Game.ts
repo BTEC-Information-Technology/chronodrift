@@ -43,6 +43,8 @@ import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
 import { makeCityEnvMap, makeStarMaterial, makeAsphaltTexture } from './cyber';
 import { buildToken, animateToken, TOKEN_BY_ERA, type TokenMats } from './tokens';
 import { SpaceSky, CosmicDust, buildVoidRoad, makeNebulaTexture, type VoidRoadMats } from './space';
+import { buildRuin, type RuinMats } from './ruins';
+import { makeFacade as makeFacadeTex } from './cyber';
 import { buildSocle, buildUpper, disposeLook, buildRoadRelief, makeInteriorTexture, INTERIOR_KINDS, SOCLE_H, type CityMats, type BuildingLook, type BuildingSpec } from './city';
 import type { Settings } from './settings';
 
@@ -281,8 +283,10 @@ export class Game {
   private scnEcoMat!: THREE.MeshStandardMaterial;
   private scnSolarMat!: THREE.MeshStandardMaterial;
   // Unknown Future materials: dark monolith + neon accent.
-  private scnVoidMat!: THREE.MeshStandardMaterial;
-  private scnVoidNeon!: THREE.MeshStandardMaterial;
+  // Unknown Future ruins: dead Neo-Cyberpunk blocks broken in two (ruins.ts), 4 variants built once at start, cloned per spawn.
+  // A spawn shows the lower piece, the upper piece or both (a rigid tandem: the pieces keep their offsets and never cross).
+  private ruinLooks: { pieces: THREE.Group[]; home: THREE.Vector3[]; dir: THREE.Vector3[]; pr: number[]; radius: number }[] = [];
+  private ruins: { g: THREE.Group; axis: THREE.Vector3; w: number; active: boolean }[] = [];
   // Wide side ground (per era) the scenery stands on — otherwise buildings look like they float.
   private terrainMat!: THREE.MeshStandardMaterial;
   private terrains: THREE.Mesh[] = [];
@@ -507,6 +511,8 @@ export class Game {
     for (const kind of TOKEN_BY_ERA) warm.add(buildToken(kind, this.tokenMats));
     const trains = [this.trainLookFor(6, true), this.trainLookFor(6, false)]; // clones share the cached geometry: not disposed below
     warm.add(...trains);
+    const ruinClones = this.ruinLooks[0] ? this.ruinLooks[0].pieces.map((p) => p.clone()) : [];
+    warm.add(...ruinClones);
     const b0 = this.buildings[0];
     if (b0) {
       const f = makeFacade(10, 20, Math.random, { normal: true });
@@ -533,6 +539,7 @@ export class Game {
     for (const v of this.voidRoads) v.visible = false;
     if (b0) b0.panel.visible = false;
     for (const t of trains) warm.remove(t);
+    for (const c of ruinClones) warm.remove(c);
     warm.traverse((o) => { const m = o as THREE.Mesh; if (m.isMesh) m.geometry.dispose(); });
     warm.removeFromParent();
   }
@@ -675,6 +682,7 @@ export class Game {
         s.g.visible = false;
       }
     }
+    for (const r of this.ruins) if (r.active && r.g.position.z < SPAWN_Z) { r.active = false; this.scene.remove(r.g); }
     this.pendingEra = target;
     this.portal.active = true;
     this.portal.crossed = false;
@@ -1078,9 +1086,60 @@ export class Game {
     this.scnGoldMat = mat(0xd9b65a, 0x6a4e16, 0.6, 0.4, 0.5);
     this.scnEcoMat = mat(0x4aa86a, 0x123f24, 0.45, 0.5, 0.2);
     this.scnSolarMat = mat(0x1a2a5a, 0x102a6a, 0.7, 0.4, 0.6);
-    this.scnVoidMat = mat(0x23234a, 0x14143a, 0.5, 0.5, 0.4);
-    this.scnVoidNeon = mat(0x0a0a18, 0x8ad8ff, 1.4, 0.4, 0.3);
-    this.sceneryMats.push(this.scnTrunkMat, this.scnLeafA, this.scnLeafB, this.scnRockMat, this.scnMarbleMat, this.scnGoldMat, this.scnEcoMat, this.scnSolarMat, this.scnVoidMat, this.scnVoidNeon);
+    this.sceneryMats.push(this.scnTrunkMat, this.scnLeafA, this.scnLeafB, this.scnRockMat, this.scnMarbleMat, this.scnGoldMat, this.scnEcoMat, this.scnSolarMat);
+    this.buildRuins();
+  }
+
+  /** The four ruin variants (Unknown Future): the city's block with every light out, broken in two. Materials go through the curvature shader. */
+  private buildRuins() {
+    const std = (o: THREE.MeshStandardMaterialParameters) => { const m = new THREE.MeshStandardMaterial({ roughness: 0.8, metalness: 0.1, ...o }); this.sceneryMats.push(m); return m; };
+    const interiors = {} as CityMats['interiors'];
+    for (const k of INTERIOR_KINDS) interiors[k] = [std({ color: 0x05060a })];
+    const city: CityMats = {
+      concrete: std({ color: 0x3a3f5c, roughness: 0.7 }), dark: std({ color: 0x0a0b14, roughness: 0.6, metalness: 0.3 }), white: std({ color: 0x7a7d88 }), red: std({ color: 0x4a161c }),
+      warm: std({ color: 0x14110c }), glassDark: std({ color: 0x0b1a2c, roughness: 0.1, metalness: 0.8 }),
+      glassSheen: std({ color: 0x9fdcff, roughness: 0.05, metalness: 0.6, transparent: true, opacity: 0.1, depthWrite: false }),
+      hazardY: std({ color: 0x8a7a2a }), hazardK: std({ color: 0x15161e }), interiors,
+    };
+    const inner = std({ color: 0x343746, emissive: 0x14151c, emissiveIntensity: 0.6, roughness: 1, flatShading: true });
+    const rebar = std({ color: 0x4a3426, roughness: 0.7, metalness: 0.4 });
+    const tube = std({ color: 0x0c1018, roughness: 0.35, metalness: 0.2 });
+    const facade = (w: number, h: number) => { const f = makeFacadeTex(w, h, Math.random, { normal: true, dead: true }); return std({ map: f.map, normalMap: f.normal ?? null, normalScale: new THREE.Vector2(0.9, 0.9), color: 0xb4bace, roughness: 0.7, metalness: 0.1 }); };
+    for (let i = 0; i < 4; i++) {
+      const w = 7 + Math.random() * 3, topH = 20 + Math.random() * 12;
+      const spec: BuildingSpec = { w, topH, d: 8 + Math.random() * 2, side: i % 2 ? 1 : -1, h1: 0, tw: w * 0.65, td: 7, towerX: Math.random() * 2 - 1 };
+      spec.h1 = SOCLE_H + (topH - SOCLE_H) * (0.55 + Math.random() * 0.25);
+      const m: RuinMats = { body: facade(w, spec.h1 - SOCLE_H), tower: facade(spec.tw, topH - spec.h1), inner, rebar, tube, city };
+      const ruin = this.timed('ruin', () => buildRuin(spec, m, Math.random, { jag: 1.6, rebar: 0.92 }));
+      const bc = new THREE.Vector3(0, topH / 2, 0); const home: THREE.Vector3[] = [], dir: THREE.Vector3[] = [], pr: number[] = []; let radius = 0;
+      for (const piece of ruin.pieces) {
+        const c = (piece.userData.center as THREE.Vector3).clone().sub(bc); home.push(c);
+        const d = c.clone().normalize(); d.x += Math.random() - 0.5; d.z += Math.random() - 0.5; dir.push(d.normalize());
+        const box = new THREE.Box3().setFromObject(piece); const r = box.getSize(new THREE.Vector3()).length() / 2; pr.push(r); radius = Math.max(radius, c.length() + r);
+      }
+      this.ruinLooks.push({ pieces: ruin.pieces, home, dir, pr, radius });
+    }
+  }
+
+  /** One ruin beside the road: a variant cloned (shared geometry), the lower piece / the upper piece / both pushed apart (1/3 each), scaled, tilted and set tumbling slowly. */
+  private spawnRuin(side: number) {
+    const look = this.ruinLooks[(Math.random() * this.ruinLooks.length) | 0];
+    const g = new THREE.Group();
+    const gap = 3 + Math.random() * 5;
+    const mode = (Math.random() * 3) | 0; // 0 = both, 1 = lower, 2 = upper
+    let R = 0; // bounding radius of the tumbling body: keeps it off the road whatever its rotation
+    if (mode === 0) { look.pieces.forEach((p, i) => { const c = p.clone(); c.position.copy(look.home[i]).addScaledVector(look.dir[i], gap); g.add(c); }); R = look.radius + gap; }
+    else { const i = mode - 1; g.add(look.pieces[i].clone()); R = look.pr[i]; }
+    const sc = 0.5 + Math.random() * 0.4;
+    g.scale.setScalar(sc);
+    R *= sc;
+    g.position.set(side * (TRACK_HALF_W + 0.6 + R + Math.random() * 8), Math.random() * 10 - 2, SCENERY_SPAWN_Z - Math.random() * 14);
+    g.rotation.set((Math.random() - 0.5) * 1.0, Math.random() * Math.PI * 2, (Math.random() - 0.5) * 1.0);
+    let r = this.ruins.find((x) => !x.active);
+    if (r) this.scene.remove(r.g); else { r = { g, axis: new THREE.Vector3(), w: 0, active: false }; this.ruins.push(r); }
+    r.g = g; r.active = true; r.w = 0.03 + Math.random() * 0.04;
+    r.axis.set(Math.random() - 0.5, Math.random() - 0.5, Math.random() - 0.5).normalize();
+    this.scene.add(g);
   }
 
   /** How often side scenery appears in the current era (0 = era with no scenery configured yet). */
@@ -1088,7 +1147,7 @@ export class Game {
     if (this.era === 1) return 3; // Prehistoric — dense jungle
     if (this.era === 2) return 6; // Ancient — columns/statues/buildings (sacred way)
     if (this.era === 3) return 5.5; // Solarpunk — eco-towers/panels/hedges
-    if (this.era === 4) return 20; // Unknown Future — sparse monoliths/platforms (desolate)
+    if (this.era === 4) return 26; // Unknown Future — drifting ruins (desolate)
     return 0;
   }
 
@@ -1114,6 +1173,7 @@ export class Game {
   private spawnScenery() {
     const side = this.scenerySide;
     this.scenerySide *= -1;
+    if (this.era === 4) { this.spawnRuin(side); return; }
     const s = this.nextScenery();
     s.active = true;
     s.g.visible = true;
@@ -1125,7 +1185,6 @@ export class Game {
     if (this.era === 1) this.composePrehistoric(s);
     else if (this.era === 2) this.composeAntic(s, side);
     else if (this.era === 3) this.composeSolarpunk(s, side);
-    else if (this.era === 4) this.composeVoid(s);
   }
 
   /** Prehistoric: tree (trunk + full foliage) or a group of boulders; + undergrowth bush. */
@@ -1274,38 +1333,6 @@ export class Game {
       s.box.scale.set(w, h, 2 + Math.random() * 1.5);
       s.box.position.set(0, h / 2, 0);
       s.box.rotation.y = 0;
-    }
-  }
-
-  /** Unknown Future: fractured monolith or fragmented platform, floating in the void + neon accent. */
-  private composeVoid(s: { box: THREE.Mesh; post: THREE.Mesh; blobA: THREE.Mesh; blobB: THREE.Mesh }) {
-    const driftY = 2 + Math.random() * 9; // floating (there is no ground — it's space)
-    s.box.visible = true;
-    s.box.material = this.scnVoidMat;
-    if (Math.random() < 0.5) {
-      // Fractured monolith (tall, thin, tilted).
-      const w = 1.4 + Math.random() * 1.8;
-      const h = 6 + Math.random() * 9;
-      const d = 1.4 + Math.random() * 1.8;
-      s.box.scale.set(w, h, d);
-      s.box.position.set(0, driftY, 0);
-      s.box.rotation.set((Math.random() - 0.5) * 0.9, Math.random() * 3, (Math.random() - 0.5) * 0.9);
-    } else {
-      // Fragmented platform (wide, flat, tilted).
-      const w = 4 + Math.random() * 5;
-      const h = 0.6 + Math.random() * 0.8;
-      const d = 3 + Math.random() * 4;
-      s.box.scale.set(w, h, d);
-      s.box.position.set(0, driftY, 0);
-      s.box.rotation.set((Math.random() - 0.5) * 0.6, Math.random() * 3, (Math.random() - 0.5) * 0.6);
-    }
-    // Floating neon accent (shard of light) next to the fragment.
-    if (Math.random() < 0.75) {
-      s.blobA.visible = true;
-      s.blobA.material = this.scnVoidNeon;
-      s.blobA.scale.setScalar(0.4 + Math.random() * 0.7);
-      s.blobA.position.set((Math.random() - 0.5) * 4, driftY + (Math.random() - 0.5) * 5, (Math.random() - 0.5) * 4);
-      s.blobA.rotation.set(Math.random() * 3, Math.random() * 3, Math.random() * 3);
     }
   }
 
@@ -1810,6 +1837,7 @@ export class Game {
       s.active = false;
       s.g.visible = false;
     }
+    for (const r of this.ruins) if (r.active) { r.active = false; this.scene.remove(r.g); }
     for (const b of this.buildings) {
       b.active = false;
       b.g.visible = false;
@@ -1995,6 +2023,12 @@ export class Game {
         s.active = false;
         s.g.visible = false;
       }
+    }
+    for (const r of this.ruins) {
+      if (!r.active) continue;
+      r.g.position.z += move;
+      if (!this.frozen) r.g.rotateOnAxis(r.axis, r.w * dt);
+      if (r.g.position.z > DESPAWN_Z + 40) { r.active = false; this.scene.remove(r.g); }
     }
 
     // Score (distance)
