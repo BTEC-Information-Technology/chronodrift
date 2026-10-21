@@ -42,7 +42,8 @@ import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPa
 import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
 import { makeCityEnvMap, makeStarMaterial, makeAsphaltTexture } from './cyber';
 import { buildToken, animateToken, TOKEN_BY_ERA, type TokenMats } from './tokens';
-import { SpaceSky, CosmicDust, buildVoidRoad, makeNebulaTexture, type VoidRoadMats } from './space';
+import { SpaceSky, CosmicDust, buildVoidRoad, makeNebulaTexture, makeRockMaterial, type VoidRoadMats } from './space';
+import { buildVoidBlock, buildVoidOverhead, buildVoidWall, makeVoidObstacleMats, animateVoidObstacles, animateVoidObstacle, type VoidObstacleMats } from './voidObstacles';
 import { buildRuin, type RuinMats } from './ruins';
 import { makeFacade as makeFacadeTex } from './cyber';
 import { buildSocle, buildUpper, disposeLook, buildRoadRelief, makeInteriorTexture, INTERIOR_KINDS, SOCLE_H, type CityMats, type BuildingLook, type BuildingSpec } from './city';
@@ -107,6 +108,7 @@ interface Ob {
   ramp?: THREE.Mesh; // ramp nose (climbable only) — marked by ORIENTATION, not just colour
   decor?: THREE.Group; // sci-fi intrusion decor (Prehistoric/Ancient) — vegetation/debris on the train
   look?: THREE.Group; // Neo-Cyberpunk look (procedural, obstacles.ts); the plain box stays the collision proxy
+  lookVoid?: THREE.Group; // Unknown Future look (voidObstacles.ts), built on the first spawn in that era
   looks?: Map<number, THREE.Group>; // tokens: one look per era (tokens.ts), built on first use
 }
 
@@ -213,6 +215,7 @@ export class Game {
   private space!: SpaceSky; // Unknown Future bodies (built once, composed at every entry)
   private dust!: CosmicDust; // cosmic dust drifting past the player (Unknown Future)
   private voidMats!: VoidRoadMats;
+  private voidObMats!: VoidObstacleMats; // Unknown Future obstacle materials (rock, the two crust shaders, the impact decal)
   private roadReliefs: THREE.Group[] = []; // city curbs/posts per track segment (hidden in Unknown Future)
   private voidRoads: THREE.Group[] = []; // floating tubes per segment (Unknown Future only)
 
@@ -474,6 +477,10 @@ export class Game {
     // Unknown Future road: emitters holding the floating tubes
     this.voidMats = { railL: null as unknown as THREE.Material, railR: null as unknown as THREE.Material, emitter: new THREE.MeshStandardMaterial({ color: 0x23234a, roughness: 0.5, metalness: 0.5, emissive: 0x8ad8ff, emissiveIntensity: 0.4 }) };
     this.extraCurveMats.push(this.voidMats.emitter);
+    this.voidObMats = makeVoidObstacleMats(makeRockMaterial(Math.random, true), Math.random);
+    this.extraCurveMats.push(this.voidObMats.rock, this.voidObMats.crack);
+    this.voidObMats.sun.uniforms.uCurve = this.curveUniform; // the crust shaders carry the curvature themselves
+    this.voidObMats.green.uniforms.uCurve = this.curveUniform;
     this.trainBlockMat = this.emissiveMat(TRAIN_BLOCK_COLOR, 0.4, true);
     this.trainRideMat = this.emissiveMat(TRAIN_RIDE_COLOR, 0.5, true);
     // Lush vegetation (Prehistoric) and damaged metal debris (Ancient) on the train.
@@ -508,6 +515,7 @@ export class Game {
     const warm = new THREE.Group();
     const lmFor = (type: 'block' | 'overhead' | 'wall'): ObstacleMats => { const b = this.lookBase; return { body: b.body, dark: b.dark, accent: b.accent, glass: b.glass, neon: this.lookAccent[type], white: b.white }; };
     warm.add(buildBlock(lmFor('block')), buildOverhead(lmFor('overhead')), buildWall(lmFor('wall')));
+    warm.add(buildVoidBlock(this.voidObMats), buildVoidOverhead(this.voidObMats), buildVoidWall(this.voidObMats));
     for (const kind of TOKEN_BY_ERA) warm.add(buildToken(kind, this.tokenMats));
     const trains = [this.trainLookFor(6, true), this.trainLookFor(6, false)]; // clones share the cached geometry: not disposed below
     warm.add(...trains);
@@ -1531,9 +1539,14 @@ export class Game {
       ob.look = look;
       ob.mesh.material = this.hiddenMat;
     } else if (ob.look) {
-      const neo = this.spawnEra() === 0;
-      ob.look.visible = neo;
-      ob.mesh.material = neo ? this.hiddenMat : this.mat[type];
+      const era = this.spawnEra();
+      if (era === 4 && !ob.lookVoid) {
+        ob.lookVoid = this.timed('obstacleVoid', () => (type === 'block' ? buildVoidBlock(this.voidObMats) : type === 'overhead' ? buildVoidOverhead(this.voidObMats) : buildVoidWall(this.voidObMats)));
+        ob.mesh.add(ob.lookVoid);
+      }
+      ob.look.visible = era === 0;
+      if (ob.lookVoid) ob.lookVoid.visible = era === 4;
+      ob.mesh.material = era === 0 || era === 4 ? this.hiddenMat : this.mat[type];
     }
   }
 
@@ -1914,6 +1927,7 @@ export class Game {
 
   private update(dt: number) {
     this.elapsed += dt;
+    animateVoidObstacles(this.voidObMats, this.elapsed);
 
     // Core combo — decays if you don't collect for a while.
     this.comboTimer += dt;
@@ -2099,7 +2113,7 @@ export class Game {
         if (type === 'core') {
           if (o.look) { o.mesh.rotation.y += dt * 2.2; animateToken(o.look, dt); }
           else { o.mesh.rotation.y += dt * 3; o.mesh.rotation.x += dt * 1.6; }
-        }
+        } else if (o.lookVoid?.visible) animateVoidObstacle(o.lookVoid, dt);
         if (o.mesh.position.z > DESPAWN_Z) {
           o.active = false;
           o.mesh.visible = false;
