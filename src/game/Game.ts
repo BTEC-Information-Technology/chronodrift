@@ -44,6 +44,8 @@ import { makeCityEnvMap, makeStarMaterial, makeAsphaltTexture } from './cyber';
 import { buildToken, animateToken, TOKEN_BY_ERA, type TokenMats } from './tokens';
 import { SpaceSky, CosmicDust, buildVoidRoad, makeNebulaTexture, makeRockMaterial, type VoidRoadMats } from './space';
 import { buildVoidBlock, buildVoidOverhead, buildVoidWall, makeVoidObstacleMats, animateVoidObstacles, animateVoidObstacle, type VoidObstacleMats } from './voidObstacles';
+import { buildRockTrain, makeVeinMaterial, type RockTrainMats } from './voidTrain';
+import { buildWreckTrain, makeWreckMats, type WreckMats } from './voidWreck';
 import { buildRuin, type RuinMats } from './ruins';
 import { makeFacade as makeFacadeTex } from './cyber';
 import { buildSocle, buildUpper, disposeLook, buildRoadRelief, makeInteriorTexture, INTERIOR_KINDS, SOCLE_H, type CityMats, type BuildingLook, type BuildingSpec } from './city';
@@ -165,6 +167,12 @@ export class Game {
   private hiddenMat!: THREE.MeshBasicMaterial;
   private trainLook!: { ride: TrainMats; block: TrainMats };
   private trainCache = new Map<number, THREE.Group>(); // train looks per integer length (built once; spawns clone them)
+  // Unknown Future trains: boulder convoys (voidTrain.ts) and, 1 in 10, maglev wrecks (voidWreck.ts); same caching
+  private convoyCache = new Map<number, THREE.Group>();
+  private wreckCache = new Map<number, THREE.Group>();
+  private convoyMats!: RockTrainMats;
+  private wreckMats!: WreckMats;
+  private static readonly WRECK_SHARE = 0.1;
   private pendingBuildings: PendingBuilding[] = []; // placements in progress: one stage per frame (textures → socle+frontage → upper+reveal)
   private lookBase!: Omit<TrainMats, 'neon'>; // shared smooth materials (hull, panels, glass, lights)
   private tokenMats!: TokenMats; // pickup tokens: dark metal, glass, neon in the era's core colour // Neo-Cyberpunk train materials per type (neon colour differs)
@@ -479,6 +487,11 @@ export class Game {
     this.extraCurveMats.push(this.voidMats.emitter);
     this.voidObMats = makeVoidObstacleMats(makeRockMaterial(Math.random, true), Math.random);
     this.extraCurveMats.push(this.voidObMats.rock, this.voidObMats.crack);
+    this.convoyMats = { rock: this.voidObMats.rock, veins: makeVeinMaterial(), sun: this.voidObMats.sun };
+    (this.convoyMats.veins as THREE.ShaderMaterial).uniforms.uCurve = this.curveUniform;
+    this.wreckMats = makeWreckMats();
+    for (const m of [this.wreckMats.rust, this.wreckMats.rustDark, this.wreckMats.brokenGlass]) m.uniforms.uCurve = this.curveUniform;
+    this.extraCurveMats.push(this.wreckMats.white); // the only standard material of the wreck (the headlight sockets)
     this.voidObMats.sun.uniforms.uCurve = this.curveUniform; // the crust shaders carry the curvature themselves
     this.voidObMats.green.uniforms.uCurve = this.curveUniform;
     this.trainBlockMat = this.emissiveMat(TRAIN_BLOCK_COLOR, 0.4, true);
@@ -519,6 +532,8 @@ export class Game {
     for (const kind of TOKEN_BY_ERA) warm.add(buildToken(kind, this.tokenMats));
     const trains = [this.trainLookFor(6, true), this.trainLookFor(6, false)]; // clones share the cached geometry: not disposed below
     warm.add(...trains);
+    const voidTrains = [buildRockTrain(this.convoyMats, 8, TRAIN_W, TRAIN_H, RAMP_LEN), buildWreckTrain(this.wreckMats, 8, TRAIN_W, TRAIN_H, RAMP_LEN)]; // fresh (not cached): disposed with the warm group
+    warm.add(...voidTrains);
     const ruinClones = this.ruinLooks[0] ? this.ruinLooks[0].pieces.map((p) => p.clone()) : [];
     warm.add(...ruinClones);
     const b0 = this.buildings[0];
@@ -559,6 +574,18 @@ export class Game {
     if (!base) { base = this.timed(`train${L}`, () => buildTrain(this.trainLook.ride, L, TRAIN_W, TRAIN_H, RAMP_LEN)); this.trainCache.set(L, base); }
     const look = base.clone();
     if (!trampoline) look.traverse((o) => { const mm = o as THREE.Mesh; if (mm.isMesh && mm.name === 'neon') mm.material = this.trainLook.block.neon; });
+    look.scale.z = len / L;
+    return look;
+  }
+
+  /** Unknown Future train look for `len`: a boulder convoy, or (1 in 10) a maglev wreck; cached per integer length, cloned per spawn, stretched to the exact length. */
+  private voidTrainLookFor(len: number): THREE.Group {
+    const L = Math.max(6, Math.min(23, Math.round(len)));
+    const wreck = Math.random() < Game.WRECK_SHARE;
+    const cache = wreck ? this.wreckCache : this.convoyCache;
+    let base = cache.get(L);
+    if (!base) { base = this.timed(wreck ? `wreck${L}` : `convoy${L}`, () => (wreck ? buildWreckTrain(this.wreckMats, L, TRAIN_W, TRAIN_H, RAMP_LEN) : buildRockTrain(this.convoyMats, L, TRAIN_W, TRAIN_H, RAMP_LEN))); cache.set(L, base); }
+    const look = base.clone();
     look.scale.z = len / L;
     return look;
   }
@@ -1587,8 +1614,9 @@ export class Game {
       ob.look.removeFromParent(); // geometry is shared with the cache: not disposed
       ob.look = undefined;
     }
-    if (this.spawnEra() === 0) {
-      ob.look = this.trainLookFor(len, trampoline);
+    const spawnEra = this.spawnEra();
+    if (spawnEra === 0 || spawnEra === 4) {
+      ob.look = spawnEra === 0 ? this.trainLookFor(len, trampoline) : this.voidTrainLookFor(len);
       ob.look.rotation.y = trampoline ? 0 : Math.PI;
       ob.look.position.set(LANE_X[lane], 0, frontZ - len / 2);
       this.scene.add(ob.look);

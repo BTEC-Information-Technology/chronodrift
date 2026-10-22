@@ -38,7 +38,7 @@ Custom domains come from `wrangler.jsonc` (`chronodrift.fun-zone.app` and
 ## Conventions
 
 - **`BUILD` in `src/main.ts`** = the number shown on the start screen. Increment it on every
-  change so you can confirm on the phone that the new code actually loaded. (Current: **build 124**.)
+  change so you can confirm on the phone that the new code actually loaded. (Current: **build 125**.)
 - Collisions and game logic live in **logical space** (lanes `LANE_X`, `px/py`); models and
   curvature are **visual only**, so assets can be swapped in without touching gameplay.
 - Commit messages are written in **English**.
@@ -72,6 +72,11 @@ Custom domains come from `wrangler.jsonc` (`chronodrift.fun-zone.app` and
 - `voidObstacles.ts` — Unknown Future obstacle looks: a settled boulder (jump), an elongated green-cracked boulder
   rolling across the road (slide), a big chunk of the dying sun smashed into the glass road with an impact-crack
   decal (lane change). The crust shader is `makeCrackMaterial` in `space.ts` (shared with the dying sun).
+- `voidTrain.ts` — Unknown Future train: a convoy of boulders (own rounded shapes, domes at roof height, the nose
+  boulder tapered into the ramp), faint green marble veins (additive thin-vein crust shader), dying-sun chunk at
+  the tail. `voidWreck.ts` + `wreckShaders.ts` — the maglev wreck: rust shader (faded paint, blooms with lifting
+  paint, runs, pitting; dark-brown base on the fittings), broken-glass shader (impact webs, rings, crazing, jagged
+  black holes; nearest impact over neighbouring cells), headlights as flat black sockets.
 - `neon-outlaw.clips.json` — per-clip airborne window (take-off / landing), generated with the model.
 - `rng.ts` / `math.ts` / `types.ts` — utilities (seeded mulberry32, lerp/damp, types).
 - `public/models/neon-outlaw.glb` — the Neon Outlaw (799 KB): mesh + rig generated with Meshy from
@@ -169,7 +174,9 @@ Custom domains come from `wrangler.jsonc` (`chronodrift.fun-zone.app` and
   upper piece or both as a rigid tandem (1/3 each), drifting as one body (scale 0.5-0.9, tilt, slow tumble)
   kept off the road by its bounding radius; every 26 units, alternating sides. Obstacles (build 124,
   `voidObstacles.ts`): pieces of the sky on the road, no chevrons (the shape reads the move); values tuned by
-  the owner: glow 0.53, scale 0.20, rim 1.94, spin 0.68. Fragments of the other eras will follow once those eras get their final art. The rarest excursion.
+  the owner: glow 0.53, scale 0.20, rim 1.94, spin 0.68. Trains (build 125): boulder convoys (veins 0.42 / scale
+  0.86) and, 1 in 10, maglev wrecks (rust 0.70, scale 1.09, streaks 1.33, brightness 0.48, glass 0.63, hole 1.32,
+  glass scale 0.92); cached per integer length and cloned, like the maglev. Fragments of the other eras will follow once those eras get their final art. The rarest excursion.
 
 ## Active TEST values (restore to normal before release)
 
