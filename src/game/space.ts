@@ -16,7 +16,7 @@ function noise3(x: number, y: number, z: number) {
   return l(l(l(hash3(ix, iy, iz), hash3(ix + 1, iy, iz), fx), l(hash3(ix, iy + 1, iz), hash3(ix + 1, iy + 1, iz), fx), fy), l(l(hash3(ix, iy, iz + 1), hash3(ix + 1, iy, iz + 1), fx), l(hash3(ix, iy + 1, iz + 1), hash3(ix + 1, iy + 1, iz + 1), fx), fy), fz);
 }
 function fbm3(x: number, y: number, z: number, oct = 4) { let a = 0.5, s = 0, f = 1; for (let i = 0; i < oct; i++) { s += a * noise3(x * f, y * f, z * f); f *= 2.1; a *= 0.5; } return s; }
-const GLSL_NOISE = `
+export const GLSL_NOISE = `
   float hash(vec3 p){ return fract(sin(dot(p, vec3(127.1, 311.7, 74.7))) * 43758.5453); }
   float noise(vec3 p){ vec3 i = floor(p); vec3 f = fract(p); f = f*f*(3.0-2.0*f);
     return mix(mix(mix(hash(i), hash(i+vec3(1,0,0)), f.x), mix(hash(i+vec3(0,1,0)), hash(i+vec3(1,1,0)), f.x), f.y), mix(mix(hash(i+vec3(0,0,1)), hash(i+vec3(1,0,1)), f.x), mix(hash(i+vec3(0,1,1)), hash(i+vec3(1,1,1)), f.x), f.y), f.z); }
@@ -136,7 +136,7 @@ function brokenPlanet(R: number, rng: Rng): Body {
 // ---------- 2. dying sun (hue -40, brightness 0.52, cracks 1.5, crust 0.7, corona 1.37, size 1.3) ----------
 /** Cracked-crust shader (the dying sun's skin, reused by the Unknown Future obstacles): dark crust scabs, glowing cracks that creep, a rim tint.
  *  Unlit, HDR → bloom. `uCurve` is the game's road-curvature uniform (set by the game; zero elsewhere), `uTime` must be fed per frame. */
-export interface CrackLook { crustA: THREE.Color; crustB: THREE.Color; lava: THREE.Color; rim: THREE.Color; hue: number; bright: number; crack: number; crust: number; scale: number /* noise units per world unit: the pattern repeats every ~1/scale units */ }
+export interface CrackLook { crustA: THREE.Color; crustB: THREE.Color; lava: THREE.Color; rim: THREE.Color; hue: number; bright: number; crack: number; crust: number; scale: number /* noise units per world unit: the pattern repeats every ~1/scale units */; veins?: boolean /* thin ridge lines (marble veins) instead of the wide crack blobs */; lit?: boolean /* shade with a fixed light from the upper front (for rust / glass, not for glowing things) */ }
 export const SUN_LOOK: CrackLook = { crustA: new THREE.Color(0.07, 0.012, 0.01), crustB: new THREE.Color(0.30, 0.05, 0.02), lava: new THREE.Color(2.0, 0.45, 0.08), rim: new THREE.Color(0.5, 0.08, 0.02), hue: -40, bright: 0.52, crack: 1.5, crust: 0.7, scale: 1 };
 export function makeCrackMaterial(look: CrackLook): THREE.ShaderMaterial {
   const U = { uTime: { value: 0 }, uHue: { value: look.hue }, uBright: { value: look.bright }, uCrack: { value: look.crack }, uCrust: { value: look.crust }, uScale: { value: look.scale },
@@ -147,10 +147,10 @@ export function makeCrackMaterial(look: CrackLook): THREE.ShaderMaterial {
         float cDist = -mvPosition.z; mvPosition.x += uCurve.x * cDist * cDist; mvPosition.y += uCurve.y * cDist * cDist; gl_Position = projectionMatrix * mvPosition; }`,
     fragmentShader: `uniform float uTime, uHue, uBright, uCrack, uCrust; uniform vec3 uCrustA, uCrustB, uLava, uRim; varying vec3 vN; varying vec3 vNv; ${GLSL_NOISE}
       void main(){ vec3 n = vN; float t = uTime * 0.05; float scab = fbm(n * 2.5 + t); float crack = fbm(n * 9.0 - t * 2.0);
-        float c = smoothstep(0.52, 0.62, crack) * smoothstep(0.35, 0.6, scab) * uCrack;
+        float c = ${look.veins ? '(1.0 - smoothstep(0.0, 0.035, abs(crack - 0.55))) * smoothstep(0.3, 0.55, scab)' : 'smoothstep(0.52, 0.62, crack) * smoothstep(0.35, 0.6, scab)'} * uCrack;
         vec3 crust = mix(uCrustA, uCrustB, scab) * (1.0 - uCrust * 0.6);
         vec3 col = mix(crust, uLava, clamp(c, 0.0, 1.0)); float limb = pow(1.0 - abs(vNv.z), 2.0); col += uRim * limb * 0.5;
-        col = hueShift(col, uHue) * uBright; gl_FragColor = vec4(col, 1.0); }` });
+        col = hueShift(col, uHue) * uBright;${look.lit ? ' col *= 0.45 + 0.55 * max(0.0, dot(normalize(vNv), normalize(vec3(0.35, 0.8, 0.5))));' : ''} gl_FragColor = vec4(col, 1.0); }` });
 }
 function dyingSun(R: number, rng: Rng): Body {
   const mat = makeCrackMaterial({ ...SUN_LOOK, scale: 1 / R }); const U = mat.uniforms;
