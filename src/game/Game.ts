@@ -42,8 +42,8 @@ import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPa
 import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
 import { makeCityEnvMap, makeStarMaterial, makeAsphaltTexture } from './cyber';
 import { buildToken, animateToken, TOKEN_BY_ERA, type TokenMats } from './tokens';
-import { SpaceSky, CosmicDust, buildVoidRoad, makeNebulaTexture, makeRockMaterial, type VoidRoadMats } from './space';
-import { buildVoidBlock, buildVoidOverhead, buildVoidWall, makeVoidObstacleMats, animateVoidObstacles, animateVoidObstacle, type VoidObstacleMats } from './voidObstacles';
+import { SpaceSky, CosmicDust, buildVoidRoad, makeNebulaTexture, makeRockMaterial, makeCrackMaterial, ROCK_BRIGHT, type VoidRoadMats } from './space';
+import { buildVoidBlock, buildVoidOverhead, buildVoidWall, makeVoidObstacleMats, animateVoidObstacles, animateVoidObstacle, SUN_CHUNK_LOOK, type VoidObstacleMats } from './voidObstacles';
 import { buildRockTrain, makeVeinMaterial, type RockTrainMats } from './voidTrain';
 import { buildWreckTrain, makeWreckMats, type WreckMats } from './voidWreck';
 import { buildRuin, type RuinMats } from './ruins';
@@ -73,6 +73,11 @@ const PORTAL_Y = 2.2; // height of the portal ring's centre
 const TRAIN_W = 1.9; // width within a lane
 const TRAIN_H = 2.8; // BOTH types — same height; the roof is traversable on both
 const ROOF_TOL = 0.35; // "on the roof" tolerance (support + crash immunity)
+// Solidity: the logical boxes are tested a little larger than the visuals and over the distance moved in the frame
+const HIT_PAD_Z = 0.12, HIT_PAD_X = 0.05;
+const FEET_MARGIN = 0.2; // a jump clears a block only with this much air under the feet (the animation's feet hang below py)
+const BLOCK_TOP_TOL = 0.12; // landing on a block from this close above its top → stand on it instead of sinking
+const ROAD_CLEAR = TRACK_HALF_W + 0.6; // side scenery keeps its low parts at least this far from the centre
 const AIR_MARGIN = 0.4; // above this height the player counts as "jumping" → the trampoline catches them
 const RAMP_LEN = 3.6; // length of the ramp nose in front of a climbable train (slope towards the player)
 const COYOTE_TIME = 0.18; // grace: you can still jump briefly after leaving the support
@@ -485,10 +490,14 @@ export class Game {
     // Unknown Future road: emitters holding the floating tubes
     this.voidMats = { railL: null as unknown as THREE.Material, railR: null as unknown as THREE.Material, emitter: new THREE.MeshStandardMaterial({ color: 0x23234a, roughness: 0.5, metalness: 0.5, emissive: 0x8ad8ff, emissiveIntensity: 0.4 }) };
     this.extraCurveMats.push(this.voidMats.emitter);
-    this.voidObMats = makeVoidObstacleMats(makeRockMaterial(Math.random, true), Math.random);
+    // brightness tuned by the owner (2026-10-23): jump boulders 9.0 (visible from afar); convoys: boulder face 4.0 (rock + veins), the sun chunk at the tail dimmed to 0.6/1.52
+    this.voidObMats = makeVoidObstacleMats(makeRockMaterial(Math.random, true, 9), Math.random);
     this.extraCurveMats.push(this.voidObMats.rock, this.voidObMats.crack);
-    this.convoyMats = { rock: this.voidObMats.rock, veins: makeVeinMaterial(), sun: this.voidObMats.sun };
-    (this.convoyMats.veins as THREE.ShaderMaterial).uniforms.uCurve = this.curveUniform;
+    const faceK = 4 / ROCK_BRIGHT, sunK = 0.6 / ROCK_BRIGHT; // the convoy's own materials
+    this.convoyMats = { rock: makeRockMaterial(Math.random, true, 4), veins: makeVeinMaterial(), sun: makeCrackMaterial({ ...SUN_CHUNK_LOOK, bright: SUN_CHUNK_LOOK.bright * sunK }) };
+    (this.convoyMats.veins as THREE.ShaderMaterial).uniforms.uCrack.value *= faceK;
+    for (const m of [this.convoyMats.veins, this.convoyMats.sun] as THREE.ShaderMaterial[]) m.uniforms.uCurve = this.curveUniform;
+    this.extraCurveMats.push(this.convoyMats.rock);
     this.wreckMats = makeWreckMats();
     for (const m of [this.wreckMats.rust, this.wreckMats.rustDark, this.wreckMats.brokenGlass]) m.uniforms.uCurve = this.curveUniform;
     this.extraCurveMats.push(this.wreckMats.white); // the only standard material of the wreck (the headlight sockets)
@@ -1220,6 +1229,15 @@ export class Game {
     if (this.era === 1) this.composePrehistoric(s);
     else if (this.era === 2) this.composeAntic(s, side);
     else if (this.era === 3) this.composeSolarpunk(s, side);
+    this.keepOffRoad(s.g, side);
+  }
+
+  /** Solidity: nothing low may stand over the road. The piece is pushed outwards until every part under 3 m clears ROAD_CLEAR (crowns and signs may hang over). */
+  private keepOffRoad(g: THREE.Object3D, side: number) {
+    g.updateMatrixWorld(true);
+    let inner = Infinity; const box = new THREE.Box3();
+    g.traverse((o) => { const m = o as THREE.Mesh; if (!m.isMesh || !m.visible) return; box.setFromObject(m); if (box.min.y > 3) return; inner = Math.min(inner, side > 0 ? box.min.x : -box.max.x); });
+    if (inner < ROAD_CLEAR) g.position.x += side * (ROAD_CLEAR - inner);
   }
 
   /** Prehistoric: tree (trunk + full foliage) or a group of boulders; + undergrowth bush. */
@@ -1789,8 +1807,19 @@ export class Game {
   }
 
   /** Height of the support under the player (ground=0 or a train roof). */
+  private onTrainRoof = false; // the camera lifts only on trains, not on a block top
   private computeSupportY(): number {
     let s = 0;
+    this.onTrainRoof = false;
+    // block tops: a player arriving from above (within BLOCK_TOP_TOL) stands on the block (the box is solid), never sinks in
+    const pz0 = PLAYER_Z - PLAYER_D / 2, pz1 = PLAYER_Z + PLAYER_D / 2;
+    for (const o of this.pools.block) {
+      if (!o.active) continue;
+      const oz = o.mesh.position.z, sp = SPEC.block;
+      if (!rangesOverlap(pz0, pz1, oz - sp.d / 2 - HIT_PAD_Z, oz + sp.d / 2 + HIT_PAD_Z)) continue;
+      if (Math.abs(this.px - LANE_X[o.lane]) > PLAYER_W / 2 + sp.w / 2 + HIT_PAD_X) continue;
+      if (this.py >= BLOCK_H - BLOCK_TOP_TOL) s = Math.max(s, BLOCK_H);
+    }
     for (const o of this.trains) {
       if (!o.active) continue;
       if (Math.abs(this.px - LANE_X[o.lane]) > PLAYER_W / 2 + TRAIN_W / 2) continue;
@@ -1798,7 +1827,7 @@ export class Game {
       const half = o.len / 2;
       if (PLAYER_Z < cz - half || PLAYER_Z > cz + half) continue;
       // only if on/above the roof (a jump from the ground — 2.41 — doesn't reach 2.8-0.35)
-      if (this.py >= o.roofY - ROOF_TOL) s = Math.max(s, o.roofY);
+      if (this.py >= o.roofY - ROOF_TOL) { s = Math.max(s, o.roofY); this.onTrainRoof = true; }
     }
     return s;
   }
@@ -1956,6 +1985,7 @@ export class Game {
   private update(dt: number) {
     this.elapsed += dt;
     animateVoidObstacles(this.voidObMats, this.elapsed);
+    (this.convoyMats.sun as THREE.ShaderMaterial).uniforms.uTime.value = this.elapsed;
 
     // Core combo — decays if you don't collect for a while.
     this.comboTimer += dt;
@@ -2149,8 +2179,9 @@ export class Game {
         }
         const sp = SPEC[type];
         const oz = o.mesh.position.z;
-        if (!rangesOverlap(pz0, pz1, oz - sp.d / 2, oz + sp.d / 2)) continue;
-        const xOverlap = Math.abs(this.px - LANE_X[o.lane]) < PLAYER_W / 2 + sp.w / 2;
+        // solidity: swept over the distance moved this frame (no first contact skipped at low fps), slightly padded
+        if (!rangesOverlap(pz0, pz1, oz - sp.d / 2 - move - HIT_PAD_Z, oz + sp.d / 2 + HIT_PAD_Z)) continue;
+        const xOverlap = Math.abs(this.px - LANE_X[o.lane]) < PLAYER_W / 2 + sp.w / 2 + HIT_PAD_X;
         if (!xOverlap) continue;
         if (type === 'core') { const cy = o.mesh.position.y; if (this.py + PLAYER_H < cy - 0.45 || this.py > cy + 0.45) continue; } // tokens have a height now (roof / jump arc)
         this.hit(o);
@@ -2257,7 +2288,7 @@ export class Game {
     // Rises with the support (the train roof), not with every jump → the framing stays fixed.
     this.camX = damp(this.camX, this.px * 0.35, 6, dt);
     // Target level: on a roof it rises; in the air (hop between trains) it STAYS; lowers only on the ground.
-    if (this.supportY > 0) this.camTargetLift = this.supportY;
+    if (this.supportY > 0 && this.onTrainRoof) this.camTargetLift = this.supportY;
     else if (this.py <= 0.1) this.camTargetLift = 0;
     this.camLift = damp(this.camLift, this.camTargetLift, 8, dt);
     this.camera.position.set(this.camX, this.camBaseY + this.camLift, this.camBaseZ);
@@ -2285,7 +2316,7 @@ export class Game {
       return;
     }
     let cleared = false;
-    if (o.type === 'block') cleared = this.py >= BLOCK_H; // jumped over
+    if (o.type === 'block') cleared = this.py >= BLOCK_H + FEET_MARGIN || (this.supportY >= BLOCK_H && this.py >= BLOCK_H - 1e-3); // jumped over with air under the feet, or standing on it
     else if (o.type === 'overhead') cleared = this.slideT > 0; // slid underneath
     else if (o.type === 'wall') cleared = false; // change lane
     if (!cleared) this.crash(o);

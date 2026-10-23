@@ -38,7 +38,7 @@ Custom domains come from `wrangler.jsonc` (`chronodrift.fun-zone.app` and
 ## Conventions
 
 - **`BUILD` in `src/main.ts`** = the number shown on the start screen. Increment it on every
-  change so you can confirm on the phone that the new code actually loaded. (Current: **build 125**.)
+  change so you can confirm on the phone that the new code actually loaded. (Current: **build 126**.)
 - Collisions and game logic live in **logical space** (lanes `LANE_X`, `px/py`); models and
   curvature are **visual only**, so assets can be swapped in without touching gameplay.
 - Commit messages are written in **English**.
@@ -148,6 +148,12 @@ Custom domains come from `wrangler.jsonc` (`chronodrift.fun-zone.app` and
   arc. Token pickup checks height (ground / roof / arc).
 - **Score popups (builds 116-119):** "+50" rises from the collected token's screen position, bigger and faster
   with the game speed (`popAt` in `main.ts`).
+- **Solidity (build 126):** obstacle boxes are tested swept over the distance moved in the frame (no first
+  contact skipped at low fps) and padded by 0.12 / 0.05; a jump clears a block only with 0.2 of air under
+  `py` (the animation's feet hang below it); arriving on a block's top from within 0.12 above it makes the
+  block a support (the player stands on it, the camera does not lift); side scenery is pushed outwards after
+  composing until every part under 3 m clears 4.2 from the centre (crowns may hang over); drifting pieces
+  are rigid ensembles (ruins).
 - **Tokens (build 107, `tokens.ts`):** one look per era — hourglass coin (Neo), glass hourglass (Prehistoric),
   crystal shard (Ancient), clock gear (Solarpunk), gyroscope orb (Unknown Future); neon in the era's core
   colour, coin-style spin plus orbiting rings.
@@ -176,7 +182,9 @@ Custom domains come from `wrangler.jsonc` (`chronodrift.fun-zone.app` and
   `voidObstacles.ts`): pieces of the sky on the road, no chevrons (the shape reads the move); values tuned by
   the owner: glow 0.53, scale 0.20, rim 1.94, spin 0.68. Trains (build 125): boulder convoys (veins 0.42 / scale
   0.86) and, 1 in 10, maglev wrecks (rust 0.70, scale 1.09, streaks 1.33, brightness 0.48, glass 0.63, hole 1.32,
-  glass scale 0.92); cached per integer length and cloned, like the maglev. Fragments of the other eras will follow once those eras get their final art. The rarest excursion.
+  glass scale 0.92); cached per integer length and cloned, like the maglev. Brightness (build 126): jump boulders
+  9.0; convoys: boulder face 4.0 (rock + veins), the sun chunk at the tail dimmed to 0.6/1.52; the big body below the horizon sits 16-24° off the
+  screen's vertical axis (moons below the horizon too), so the road's middle strip stays free. Fragments of the other eras will follow once those eras get their final art. The rarest excursion.
 
 ## Active TEST values (restore to normal before release)
 
@@ -216,18 +224,7 @@ Custom domains come from `wrangler.jsonc` (`chronodrift.fun-zone.app` and
    to the chest (no library/text-to-motion clip was convincing; Mixamo refused the rigged upload),
    smoothing of the leg lines at the knee, a flat visor band instead of a tube.
 4. Normalise the test values; possibly badges at coin/score thresholds.
-5. **Solidity polish** (noted 2026-10-21, after the world is finished):
-   - obstacles: the character's feet (animation) are not the physics box, so a borderline jump or a slide
-     visibly enters a block; fix = a slightly larger logical box + the "cleared" test on the model's feet,
-     a swept z test per frame (30 fps at high speed can skip the first contact), and landing on top of a
-     block pushing the player onto it instead of sinking;
-   - side scenery over the road: pieces are placed at `innerX` 4.8-11.8 with a random yaw, so wide hedges,
-     boulder groups or tilted monoliths protrude over the outer lane and the player runs through them;
-     fix = one `Box3` per spawn and push the piece out until its inner edge is >= 4.2 (things meant to
-     hang over the road, crowns/signs, need a minimum height instead). The ruins already apply this rule
-     with their bounding radius;
-   - drifting pieces must never cross each other: rigid ensemble + per-piece wobble only (the ruins do this).
-6. Later: leaderboard (Cloudflare Worker + D1) — **a single global ranking** (harder = more
+5. Later: leaderboard (Cloudflare Worker + D1) — **a single global ranking** (harder = more
    points); deterministic ghost; monetisation (billboards + interstitial + rewarded).
 
 ## Decisions (confirmed with the owner)

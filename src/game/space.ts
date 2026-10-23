@@ -260,9 +260,11 @@ export function rockGeometry(shape: number, r: number, off: number, segs = 40): 
   g.computeVertexNormals(); return g;
 }
 /** the approved loose-rock material (hue 6, brightness 1.52), fog off: for the sky; with fog for things near the road */
-export function makeRockMaterial(rng: Rng, fog = false): THREE.MeshStandardMaterial {
-  const rockTex = rockTexture(rng); const base = new THREE.Color(0x4a5078); const hsl = { h: 0, s: 0, l: 0 }; base.getHSL(hsl);
-  return new THREE.MeshStandardMaterial({ color: new THREE.Color().setHSL((hsl.h + 6 / 360) % 1, hsl.s, Math.min(1, hsl.l * 1.52)), roughness: 1, metalness: 0, map: rockTex, bumpMap: rockTex, bumpScale: 0.25, fog });
+export const ROCK_BRIGHT = 1.52; // the sky rocks' approved brightness
+export const rockColor = (bright: number) => { const base = new THREE.Color(0x4a5078); const hsl = { h: 0, s: 0, l: 0 }; base.getHSL(hsl); return new THREE.Color().setHSL((hsl.h + 6 / 360) % 1, hsl.s, Math.min(1, hsl.l * bright)); };
+export function makeRockMaterial(rng: Rng, fog = false, bright = ROCK_BRIGHT): THREE.MeshStandardMaterial {
+  const rockTex = rockTexture(rng);
+  return new THREE.MeshStandardMaterial({ color: rockColor(bright), roughness: 1, metalness: 0, map: rockTex, bumpMap: rockTex, bumpScale: 0.25, fog });
 }
 function loneRock(shape: number, r: number, off: number): Body {
   const m = mesh(rockGeometry(shape, r, off), rockMat); const group = new THREE.Group(); group.add(m);
@@ -296,13 +298,15 @@ export class SpaceSky {
     for (const b of [...this.bodies, ...this.moons, ...this.rocks]) b.group.visible = false;
     this.active = [];
     const place = (b: Body, az: number, el: number, dist: number, scale = 1) => { b.group.position.set(Math.sin(az) * Math.cos(el) * dist, Math.sin(el) * dist, -Math.cos(az) * Math.cos(el) * dist); b.group.scale.setScalar(scale); b.group.visible = true; b.group.lookAt(0, 0, 0); b.group.rotateY(Math.PI); this.active.push(b); };
-    // feature bodies: pick 2 of 4; one above the horizon, one below (seen through the glass road), both within ±12° azimuth
+    // feature bodies: pick 2 of 4; one above the horizon (within ±12° azimuth), one below (seen through the glass road) kept
+    // 16-24° off the screen's vertical axis, so the road's middle strip stays free (a big glowing body under the lane
+    // made the player look like running on it)
     const idx = [0, 1, 2, 3].sort(() => rng() - 0.5).slice(0, 2);
     const aboveFirst = rng() < 0.5;
-    idx.forEach((i, k) => { const above = (k === 0) === aboveFirst; const az = (rng() < 0.5 ? -1 : 1) * THREE.MathUtils.degToRad(4 + rng() * 8) * (k === 0 ? 1 : -1); const el = THREE.MathUtils.degToRad(above ? 10 + rng() * 14 : -(8 + rng() * 14)); place(this.bodies[i], az, el, 130 + rng() * 50); });
+    idx.forEach((i, k) => { const above = (k === 0) === aboveFirst; const az = (rng() < 0.5 ? -1 : 1) * THREE.MathUtils.degToRad(above ? 4 + rng() * 8 : 16 + rng() * 8) * (k === 0 ? 1 : -1); const el = THREE.MathUtils.degToRad(above ? 10 + rng() * 14 : -(8 + rng() * 14)); place(this.bodies[i], az, el, 130 + rng() * 50); });
     // moons: 1-2, anywhere (sides and below included)
     const nMoons = 1 + (rng() < 0.5 ? 1 : 0);
-    for (let i = 0; i < nMoons; i++) place(this.moons[i], (rng() - 0.5) * Math.PI * 1.6, THREE.MathUtils.degToRad(-40 + rng() * 90), 110 + rng() * 80);
+    for (let i = 0; i < nMoons; i++) { let az = (rng() - 0.5) * Math.PI * 1.6; const el = THREE.MathUtils.degToRad(-40 + rng() * 90); const minAz = THREE.MathUtils.degToRad(16); if (el < 0 && Math.abs(az) < minAz) az = Math.sign(az || 1) * (minAz + rng() * THREE.MathUtils.degToRad(8)); place(this.moons[i], az, el, 110 + rng() * 80); } // below the horizon: off the middle strip too
     // rocks: all over the sphere, random size
     for (const r of this.rocks) place(r, rng() * Math.PI * 2, Math.asin(2 * rng() - 1), 100 + rng() * 150, 0.6 + rng() * 0.6);
   }
